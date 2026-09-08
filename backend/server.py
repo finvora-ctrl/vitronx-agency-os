@@ -19,7 +19,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 
 from ml import (linear_forecast, zscore_anomalies, ema, score_lead,
-                cluster_clients, campaign_efficiency_index, pearson_correlation)
+                cluster_clients, campaign_efficiency_index, pearson_correlation,
+                score_creative, rank_creatives, compute_ab_winner,
+                prediction_error_stats, compute_client_risk)
+from integrations import REGISTRY as INTEGRATION_REGISTRY, get_integration
 
 # ---------- Setup ----------
 MONGO_URL = os.environ['MONGO_URL']
@@ -364,15 +367,7 @@ async def get_activity(client_id: Optional[str] = None, limit: int = 30, user: d
     if user["role"] == "client": q["client_id"] = user.get("client_id")
     return await db.activity.find(q, {"_id": 0}).sort("created_at", -1).to_list(limit)
 
-# ---------- NOTIFICATIONS ----------
-@api.get("/notifications")
-async def get_notifications(user: dict = Depends(get_current_user)):
-    return await db.notifications.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
-
-@api.post("/notifications/{nid}/read")
-async def mark_read(nid: str, user: dict = Depends(get_current_user)):
-    await db.notifications.update_one({"id": nid, "user_id": user["id"]}, {"$set": {"read": True}})
-    return {"ok": True}
+# ---------- NOTIFICATIONS (basic — extended in Phase 2 below) ----------
 
 # ---------- ANALYTICS / DASHBOARDS ----------
 @api.get("/analytics/agency")
@@ -838,6 +833,7 @@ async def on_start():
     await db.users.create_index("email", unique=True)
     await db.clients.create_index("id", unique=True)
     await seed_all()
+    await seed_phase2()
     # Write test creds
     try:
         mem = Path("/app/memory")
@@ -874,6 +870,563 @@ async def on_start():
         )
     except Exception as e:
         logger.warning(f"Could not write test_credentials: {e}")
+
+# ============================================================
+# PHASE 2 — CREATIVE INTELLIGENCE, RISK, NOTIFICATIONS, BUDGET, INTEGRATIONS
+# ============================================================
+
+# ---------- Models ----------
+class CreativeIn(BaseModel):
+    client_id: str
+    campaign_id: Optional[str] = None
+    name: str
+    content_type: str = "Social Post"
+    platform: str = "Instagram"
+    objective: str = "Awareness"
+    caption: Optional[str] = ""
+    cta: Optional[str] = ""
+    offer: Optional[str] = ""
+    hashtags: Optional[str] = ""
+    thumbnail_url: Optional[str] = None
+    variant_group: Optional[str] = None  # e.g. "diwali-2026" groups A/B/C together
+    variant_label: Optional[str] = None  # "A", "B", "C"
+    status: str = "Draft"
+    actual_impressions: Optional[int] = None
+    actual_clicks: Optional[int] = None
+    actual_conversions: Optional[int] = None
+    actual_spend: Optional[float] = None
+    actual_revenue: Optional[float] = None
+    actual_engagement: Optional[float] = None
+
+class ABMetricsIn(BaseModel):
+    impressions: int = 0
+    clicks: int = 0
+    conversions: int = 0
+    spend: float = 0
+    revenue: float = 0
+    engagement: float = 0
+
+class BudgetIn(BaseModel):
+    client_id: str
+    period: str = "monthly"  # monthly | campaign | project
+    category: str = "advertising"  # advertising | production | seo | retainer | other
+    allocated: float = 0
+    campaign_id: Optional[str] = None
+    project_id: Optional[str] = None
+    notes: Optional[str] = ""
+
+class InvoiceIn(BaseModel):
+    client_id: str
+    number: Optional[str] = None
+    amount: float
+    tax: float = 0
+    due_date: Optional[str] = None
+    status: str = "Draft"
+    line_items: Optional[List[Dict[str, Any]]] = None
+
+class NotificationIn(BaseModel):
+    user_id: Optional[str] = None
+    client_id: Optional[str] = None
+    kind: str
+    severity: str = "info"  # info | warning | critical | success
+    title: str
+    message: str
+    link: Optional[str] = None
+
+class TaskFromInsight(BaseModel):
+    insight_id: str
+    assignee_id: Optional[str] = None
+    due_days: int = 3
+
+# ---------- Historical helpers ----------
+async def historical_creative_stats(client_id: str) -> List[Dict[str, Any]]:
+    docs = await db.creatives.find(
+        {"client_id": client_id, "actual_impressions": {"$gt": 0}},
+        {"_id": 0}
+    ).to_list(500)
+    for d in docs:
+        imp, clk = d.get("actual_impressions", 0), d.get("actual_clicks", 0)
+        d["actual_ctr"] = (clk / imp * 100) if imp else 0
+    return docs
+
+# ---------- Creative CRUD + Scoring ----------
+@api.get("/creatives")
+async def list_creatives(client_id: Optional[str] = None, variant_group: Optional[str] = None,
+                          user: dict = Depends(get_current_user)):
+    q = {}
+    if client_id: q["client_id"] = client_id
+    if variant_group: q["variant_group"] = variant_group
+    if user["role"] == "client":
+        q["client_id"] = user.get("client_id")
+    return await list_col(db.creatives, q)
+
+@api.post("/creatives")
+async def create_creative(body: CreativeIn, user: dict = Depends(get_current_user)):
+    doc = body.model_dump()
+    doc["id"] = new_id(); doc["created_at"] = now_iso(); doc["created_by"] = user["id"]
+    await db.creatives.insert_one(doc)
+    strip_id(doc)
+    # Compute score immediately for convenience
+    historical = await historical_creative_stats(body.client_id)
+    doc["score"] = score_creative(doc, historical)
+    return doc
+
+@api.patch("/creatives/{cid}")
+async def update_creative(cid: str, body: dict, user: dict = Depends(get_current_user)):
+    body.pop("id", None); body.pop("_id", None); body["updated_at"] = now_iso()
+    await db.creatives.update_one({"id": cid}, {"$set": body})
+    return await db.creatives.find_one({"id": cid}, {"_id": 0})
+
+@api.delete("/creatives/{cid}")
+async def delete_creative(cid: str, user: dict = Depends(get_current_user)):
+    await db.creatives.delete_one({"id": cid})
+    return {"ok": True}
+
+@api.post("/creatives/{cid}/score")
+async def score_one_creative(cid: str, user: dict = Depends(get_current_user)):
+    c = await db.creatives.find_one({"id": cid}, {"_id": 0})
+    if not c: raise HTTPException(404, "Creative not found")
+    historical = await historical_creative_stats(c["client_id"])
+    score = score_creative(c, historical)
+    # Persist prediction for feedback loop
+    await db.predictions.insert_one({
+        "id": new_id(), "creative_id": cid, "client_id": c["client_id"],
+        "model_name": score["model_name"], "model_version": score["model_version"],
+        "predicted_ctr": score["predicted_ctr"],
+        "predicted_engagement": score["predicted_engagement"],
+        "composite_score": score["composite_score"],
+        "confidence": score["confidence"],
+        "created_at": now_iso(),
+    })
+    return score
+
+@api.get("/creatives/rank/{client_id}")
+async def rank_client_creatives(client_id: str, variant_group: Optional[str] = None,
+                                  user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    q = {"client_id": client_id}
+    if variant_group: q["variant_group"] = variant_group
+    creatives = await db.creatives.find(q, {"_id": 0}).to_list(200)
+    historical = await historical_creative_stats(client_id)
+    ranked = rank_creatives(creatives, historical)
+    return ranked
+
+# ---------- A/B Testing ----------
+@api.get("/ab/groups/{client_id}")
+async def list_ab_groups(client_id: str, user: dict = Depends(get_current_user)):
+    """Return distinct variant_groups with variant count + winner."""
+    pipeline = [
+        {"$match": {"client_id": client_id, "variant_group": {"$ne": None}}},
+        {"$group": {"_id": "$variant_group", "count": {"$sum": 1},
+                    "campaign_id": {"$first": "$campaign_id"}}}
+    ]
+    groups = await db.creatives.aggregate(pipeline).to_list(200)
+    out = []
+    for g in groups:
+        variants = await db.creatives.find({"client_id": client_id, "variant_group": g["_id"]}, {"_id": 0}).to_list(20)
+        winner = compute_ab_winner(variants)
+        out.append({"group": g["_id"], "variants": len(variants),
+                    "campaign_id": g.get("campaign_id"), "winner": winner})
+    return out
+
+@api.post("/ab/{creative_id}/record")
+async def record_ab_metrics(creative_id: str, body: ABMetricsIn, user: dict = Depends(get_current_user)):
+    """Record actual performance for a variant — closes the prediction feedback loop."""
+    creative = await db.creatives.find_one({"id": creative_id})
+    if not creative: raise HTTPException(404, "Creative not found")
+    imp = body.impressions
+    actual_ctr = (body.clicks / imp * 100) if imp else 0
+    update = {
+        "actual_impressions": body.impressions, "actual_clicks": body.clicks,
+        "actual_conversions": body.conversions, "actual_spend": body.spend,
+        "actual_revenue": body.revenue, "actual_engagement": body.engagement,
+        "actual_ctr": round(actual_ctr, 3),
+        "actual_recorded_at": now_iso(),
+    }
+    await db.creatives.update_one({"id": creative_id}, {"$set": update})
+    # Update latest prediction with actual
+    latest = await db.predictions.find_one({"creative_id": creative_id}, sort=[("created_at", -1)])
+    if latest:
+        await db.predictions.update_one({"id": latest["id"]}, {"$set": {
+            "actual_ctr": round(actual_ctr, 3),
+            "actual_recorded_at": now_iso(),
+            "error_ctr": round(actual_ctr - latest.get("predicted_ctr", 0), 3),
+        }})
+    await db.activity.insert_one({
+        "id": new_id(), "client_id": creative["client_id"], "user_id": user["id"],
+        "user_name": user["name"],
+        "action": f"recorded actual performance for creative: {creative.get('name')}",
+        "created_at": now_iso()
+    })
+    return {"ok": True, "actual_ctr": round(actual_ctr, 3)}
+
+# ---------- Prediction Accuracy ----------
+@api.get("/ml/prediction-accuracy/{client_id}")
+async def prediction_accuracy(client_id: str, user: dict = Depends(get_current_user)):
+    """Compare predicted vs actual CTR for closed feedback loop."""
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    preds = await db.predictions.find(
+        {"client_id": client_id, "actual_ctr": {"$exists": True}}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
+    pairs = [{"predicted": p["predicted_ctr"], "actual": p["actual_ctr"]} for p in preds]
+    stats = prediction_error_stats(pairs)
+    return {"stats": stats, "samples": preds[:50],
+            "model": "vitronx-creative-v1", "metric": "CTR (%)"}
+
+# ---------- Client Risk ----------
+@api.get("/risk/{client_id}")
+async def client_risk(client_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not c: raise HTTPException(404, "Client not found")
+    campaigns = await db.campaigns.find({"client_id": client_id}, {"_id": 0}).to_list(300)
+    tasks = await db.tasks.find({"client_id": client_id}, {"_id": 0}).to_list(300)
+    content = await db.content.find({"client_id": client_id}, {"_id": 0}).to_list(300)
+    risk = compute_client_risk(c, campaigns, tasks, content)
+    risk["client"] = {"id": c["id"], "name": c["name"], "industry": c["industry"], "logo_color": c.get("logo_color")}
+    return risk
+
+@api.get("/risk/agency/all")
+async def agency_risk(user: dict = Depends(require_role("agency_admin","account_manager"))):
+    clients = await db.clients.find({}, {"_id": 0}).to_list(500)
+    out = []
+    for c in clients:
+        campaigns = await db.campaigns.find({"client_id": c["id"]}, {"_id": 0}).to_list(300)
+        tasks = await db.tasks.find({"client_id": c["id"]}, {"_id": 0}).to_list(300)
+        content = await db.content.find({"client_id": c["id"]}, {"_id": 0}).to_list(300)
+        r = compute_client_risk(c, campaigns, tasks, content)
+        out.append({"id": c["id"], "name": c["name"], "logo_color": c.get("logo_color"),
+                    "industry": c["industry"], "health_score": c.get("health_score"),
+                    **r})
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    out.sort(key=lambda x: (order.get(x["risk_level"], 4), -x["risk_score"]))
+    return out
+
+# ---------- Notifications (real, computed) ----------
+@api.get("/notifications")
+async def list_notifications(user: dict = Depends(get_current_user)):
+    q = {}
+    if user["role"] == "client":
+        q = {"$or": [{"user_id": user["id"]}, {"client_id": user.get("client_id")}]}
+    else:
+        q = {"$or": [{"user_id": user["id"]}, {"user_id": None}]}
+    docs = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).to_list(100)
+    unread = sum(1 for d in docs if not d.get("read"))
+    return {"notifications": docs, "unread": unread}
+
+@api.post("/notifications/{nid}/read")
+async def read_notification(nid: str, user: dict = Depends(get_current_user)):
+    await db.notifications.update_one({"id": nid}, {"$set": {"read": True, "read_at": now_iso()}})
+    return {"ok": True}
+
+@api.post("/notifications/read-all")
+async def read_all_notifications(user: dict = Depends(get_current_user)):
+    await db.notifications.update_many({}, {"$set": {"read": True, "read_at": now_iso()}})
+    return {"ok": True}
+
+@api.post("/notifications/compute")
+async def compute_notifications(user: dict = Depends(require_role("agency_admin","account_manager"))):
+    """Scan all clients and generate notifications for real conditions."""
+    created = 0
+    clients = await db.clients.find({}, {"_id": 0}).to_list(500)
+    for c in clients:
+        campaigns = await db.campaigns.find({"client_id": c["id"]}, {"_id": 0}).to_list(300)
+        tasks = await db.tasks.find({"client_id": c["id"]}, {"_id": 0}).to_list(300)
+        content = await db.content.find({"client_id": c["id"]}, {"_id": 0}).to_list(300)
+        # ROAS drop
+        for camp in campaigns:
+            if camp.get("spend", 0) > 5000:
+                roas = camp.get("revenue", 0) / camp["spend"]
+                if roas < 1.2 and camp.get("status") == "Active":
+                    key = f"roas-drop-{camp['id']}"
+                    if not await db.notifications.find_one({"kind": key}):
+                        await db.notifications.insert_one({
+                            "id": new_id(), "kind": key, "user_id": None,
+                            "client_id": c["id"], "campaign_id": camp["id"],
+                            "severity": "critical",
+                            "title": f"ROAS critical on {camp['name']}",
+                            "message": f"{c['name']}: ROAS {roas:.2f}x on ${camp['spend']:,.0f} spend — review or pause",
+                            "link": f"/workspace/{c['id']}",
+                            "read": False, "created_at": now_iso()
+                        }); created += 1
+        # Approval backlog
+        pending = [x for x in content if x.get("status") == "Client Review"]
+        if len(pending) >= 3:
+            key = f"approval-backlog-{c['id']}"
+            if not await db.notifications.find_one({"kind": key, "read": False}):
+                await db.notifications.insert_one({
+                    "id": new_id(), "kind": key, "user_id": None,
+                    "client_id": c["id"], "severity": "warning",
+                    "title": f"Approval backlog for {c['name']}",
+                    "message": f"{len(pending)} content items awaiting client approval",
+                    "link": f"/workspace/{c['id']}",
+                    "read": False, "created_at": now_iso()
+                }); created += 1
+        # Overdue tasks
+        from datetime import datetime as _dt
+        now = datetime.now(timezone.utc)
+        overdue = [t for t in tasks if t.get("status") != "Completed" and t.get("due_date") and
+                   _dt.fromisoformat(t["due_date"].replace("Z","+00:00")) < now]
+        if len(overdue) >= 3:
+            key = f"overdue-tasks-{c['id']}"
+            if not await db.notifications.find_one({"kind": key, "read": False}):
+                await db.notifications.insert_one({
+                    "id": new_id(), "kind": key, "user_id": None,
+                    "client_id": c["id"], "severity": "warning",
+                    "title": f"Overdue tasks — {c['name']}",
+                    "message": f"{len(overdue)} tasks past due date",
+                    "link": f"/tasks",
+                    "read": False, "created_at": now_iso()
+                }); created += 1
+    return {"created": created}
+
+# ---------- Budgets ----------
+@api.get("/budgets")
+async def list_budgets(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if client_id: q["client_id"] = client_id
+    if user["role"] == "client": q["client_id"] = user.get("client_id")
+    budgets = await list_col(db.budgets, q)
+    # Enrich with actual spend
+    for b in budgets:
+        spent = 0
+        if b.get("campaign_id"):
+            camp = await db.campaigns.find_one({"id": b["campaign_id"]})
+            if camp: spent = camp.get("spend", 0)
+        elif b.get("category") == "advertising":
+            camps = await db.campaigns.find({"client_id": b["client_id"]}).to_list(100)
+            spent = sum(c.get("spend", 0) for c in camps)
+        b["spent"] = spent
+        b["remaining"] = max(b["allocated"] - spent, 0)
+        b["utilization_pct"] = round(spent / b["allocated"] * 100, 1) if b["allocated"] else 0
+        if b["utilization_pct"] >= 100: b["status"] = "overspend"
+        elif b["utilization_pct"] >= 85: b["status"] = "critical"
+        elif b["utilization_pct"] >= 70: b["status"] = "warning"
+        else: b["status"] = "healthy"
+    return budgets
+
+@api.post("/budgets")
+async def create_budget(body: BudgetIn, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    doc = body.model_dump()
+    doc["id"] = new_id(); doc["created_at"] = now_iso()
+    await db.budgets.insert_one(doc); strip_id(doc); return doc
+
+@api.delete("/budgets/{bid}")
+async def delete_budget(bid: str, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    await db.budgets.delete_one({"id": bid}); return {"ok": True}
+
+# ---------- Invoices ----------
+@api.get("/invoices")
+async def list_invoices(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if client_id: q["client_id"] = client_id
+    if user["role"] == "client": q["client_id"] = user.get("client_id")
+    return await list_col(db.invoices, q)
+
+@api.post("/invoices")
+async def create_invoice(body: InvoiceIn, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    doc = body.model_dump()
+    doc["id"] = new_id(); doc["created_at"] = now_iso()
+    if not doc.get("number"):
+        n = await db.invoices.count_documents({})
+        doc["number"] = f"VX-{2026}{n+1001}"
+    doc["total"] = doc["amount"] + doc.get("tax", 0)
+    await db.invoices.insert_one(doc); strip_id(doc); return doc
+
+@api.patch("/invoices/{iid}")
+async def update_invoice(iid: str, body: dict, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    body.pop("id", None); body.pop("_id", None)
+    await db.invoices.update_one({"id": iid}, {"$set": body})
+    return await db.invoices.find_one({"id": iid}, {"_id": 0})
+
+# ---------- AI Insight → Task ----------
+@api.post("/ai/insight-to-task")
+async def insight_to_task(body: TaskFromInsight, user: dict = Depends(get_current_user)):
+    insight = await db.ai_insights.find_one({"id": body.insight_id}, {"_id": 0})
+    if not insight: raise HTTPException(404, "Insight not found")
+    priority_map = {"Critical":"Critical","High":"High","Medium":"Medium","Low":"Low"}
+    task = {
+        "id": new_id(), "client_id": insight["client_id"],
+        "name": f"AI Action: {insight['title']}",
+        "description": f"{insight.get('recommendation','')}\n\nEvidence: {insight.get('evidence','')}",
+        "assignee_id": body.assignee_id or user["id"],
+        "priority": priority_map.get(insight.get("priority","Medium"),"Medium"),
+        "status": "To Do",
+        "due_date": (datetime.now(timezone.utc) + timedelta(days=body.due_days)).isoformat(),
+        "source": "ai_insight", "source_id": body.insight_id,
+        "created_at": now_iso(), "created_by": user["id"],
+    }
+    await db.tasks.insert_one(task)
+    await db.ai_insights.update_one({"id": body.insight_id}, {"$set": {"status": "Accepted", "task_id": task["id"]}})
+    await db.activity.insert_one({
+        "id": new_id(), "client_id": insight["client_id"], "user_id": user["id"],
+        "user_name": user["name"],
+        "action": f"created task from AI recommendation: {insight['title']}",
+        "created_at": now_iso()
+    })
+    strip_id(task); return task
+
+# ---------- Integrations ----------
+@api.get("/integrations")
+async def list_integrations(user: dict = Depends(get_current_user)):
+    return [get_integration(k).status() for k in INTEGRATION_REGISTRY.keys()]
+
+@api.get("/integrations/{provider}/preview")
+async def integration_preview(provider: str, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    """Fetch a 7-day preview from the provider (demo mode by default)."""
+    try:
+        integ = get_integration(provider)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    since = (datetime.now(timezone.utc) - timedelta(days=6)).date().isoformat()
+    until = datetime.now(timezone.utc).date().isoformat()
+    try:
+        data = await integ.fetch_metrics("demo-account", since, until)
+        data = [d.to_dict() if hasattr(d, "to_dict") else d for d in data]
+    except NotImplementedError as e:
+        return {"mode": integ.mode, "status": "not_wired", "message": str(e), "data": []}
+    return {"mode": integ.mode, "status": "ok",
+            "note": "DEMO/SANDBOX data — clearly labeled. Not from live provider." if integ.mode == "demo" else "Live data.",
+            "data": data}
+
+# ---------- Enhanced Agency Command Center ----------
+@api.get("/analytics/needs-attention")
+async def needs_attention(user: dict = Depends(get_current_user)):
+    """Aggregated priorities across the agency for the command center."""
+    items = []
+    clients = await db.clients.find({}, {"_id": 0}).to_list(500)
+    from datetime import datetime as _dt
+    now = datetime.now(timezone.utc)
+
+    for c in clients:
+        # ROAS drops
+        camps = await db.campaigns.find({"client_id": c["id"], "status": "Active"}, {"_id": 0}).to_list(50)
+        for camp in camps:
+            if camp.get("spend", 0) > 5000:
+                roas = camp.get("revenue", 0) / camp["spend"]
+                if roas < 1.5:
+                    items.append({
+                        "severity": "critical" if roas < 1.0 else "high",
+                        "kind": "roas_drop", "client_id": c["id"], "client_name": c["name"],
+                        "logo_color": c.get("logo_color"),
+                        "title": f"{c['name']} — {camp['name']} ROAS {roas:.2f}x",
+                        "detail": f"Spend ${camp['spend']:,.0f} · Revenue ${camp.get('revenue',0):,.0f}",
+                        "link": f"/workspace/{c['id']}", "score": (1.5 - roas) * 100
+                    })
+        # Approvals
+        pending = await db.content.count_documents({"client_id": c["id"], "status": "Client Review"})
+        if pending >= 2:
+            items.append({
+                "severity": "warning", "kind": "approvals",
+                "client_id": c["id"], "client_name": c["name"], "logo_color": c.get("logo_color"),
+                "title": f"{c['name']} — {pending} approvals pending",
+                "detail": "Client review backlog", "link": f"/workspace/{c['id']}",
+                "score": pending * 5,
+            })
+        # Overdue tasks
+        tasks = await db.tasks.find({"client_id": c["id"], "status": {"$ne": "Completed"}}).to_list(100)
+        overdue = [t for t in tasks if t.get("due_date") and _dt.fromisoformat(t["due_date"].replace("Z","+00:00")) < now]
+        if len(overdue) >= 2:
+            items.append({
+                "severity": "warning", "kind": "overdue",
+                "client_id": c["id"], "client_name": c["name"], "logo_color": c.get("logo_color"),
+                "title": f"{c['name']} — {len(overdue)} overdue tasks",
+                "detail": "Team execution risk", "link": f"/tasks", "score": len(overdue) * 4,
+            })
+    # Budget alerts
+    budgets = await db.budgets.find({}, {"_id": 0}).to_list(500)
+    for b in budgets:
+        spent = 0
+        if b.get("campaign_id"):
+            camp = await db.campaigns.find_one({"id": b["campaign_id"]})
+            if camp: spent = camp.get("spend", 0)
+        util = spent / b["allocated"] * 100 if b.get("allocated") else 0
+        if util >= 85:
+            cli = next((c for c in clients if c["id"] == b["client_id"]), {})
+            items.append({
+                "severity": "critical" if util >= 100 else "warning",
+                "kind": "budget", "client_id": b["client_id"], "client_name": cli.get("name","?"),
+                "logo_color": cli.get("logo_color"),
+                "title": f"{cli.get('name','?')} — budget at {util:.0f}%",
+                "detail": f"${spent:,.0f} of ${b['allocated']:,.0f} used",
+                "link": f"/workspace/{b['client_id']}", "score": util,
+            })
+    sev_order = {"critical": 0, "high": 1, "warning": 2, "info": 3}
+    items.sort(key=lambda x: (sev_order.get(x["severity"], 4), -x.get("score", 0)))
+    return items[:20]
+
+# ---------- Seed additions (idempotent) ----------
+async def seed_phase2():
+    """Add creatives (with variant groups) and budgets on top of existing seed."""
+    if await db.creatives.count_documents({}) > 0:
+        return  # already seeded
+    clients = await db.clients.find({}, {"_id": 0}).to_list(500)
+    for c in clients:
+        camps = await db.campaigns.find({"client_id": c["id"]}, {"_id": 0}).to_list(50)
+        if not camps: continue
+        # Create an A/B/C variant group for the first active campaign
+        target = next((x for x in camps if x.get("status") == "Active"), camps[0])
+        group = f"{c['name'].split()[0].lower()}-launch-2026"
+        for label, ct, cta_offer in [
+            ("A", "Reel", ("Shop Now", "Flat 25% off")),
+            ("B", "Carousel", ("Learn More", "")),
+            ("C", "Reel", ("Buy Now", "Bundle deal — Save 40%")),
+        ]:
+            imp = random.randint(15000, 90000)
+            clk = int(imp * random.uniform(0.015, 0.045))
+            conv = int(clk * random.uniform(0.03, 0.11))
+            spend = round(clk * random.uniform(1.5, 4.5), 2)
+            rev = round(conv * random.uniform(180, 620), 2)
+            await db.creatives.insert_one({
+                "id": new_id(), "client_id": c["id"], "campaign_id": target["id"],
+                "name": f"{target['name']} — Variant {label}",
+                "content_type": ct, "platform": target.get("platform","Meta Ads").replace(" Ads",""),
+                "objective": target.get("objective","Awareness"),
+                "caption": f"Discover {c['name']}'s latest — crafted for you. Tap the link in bio to explore.",
+                "cta": cta_offer[0], "offer": cta_offer[1],
+                "hashtags": "#" + " #".join(c['industry'].lower().split()) + " #brand #launch",
+                "variant_group": group, "variant_label": label,
+                "status": "Published",
+                "actual_impressions": imp, "actual_clicks": clk,
+                "actual_conversions": conv, "actual_spend": spend, "actual_revenue": rev,
+                "actual_engagement": round(random.uniform(3.5, 8.5), 2),
+                "actual_ctr": round(clk / imp * 100, 3) if imp else 0,
+                "created_at": now_iso()
+            })
+        # Extra draft creative (no historical data)
+        await db.creatives.insert_one({
+            "id": new_id(), "client_id": c["id"], "campaign_id": target["id"],
+            "name": f"{target['name']} — Draft Concept",
+            "content_type": "Reel", "platform": "Instagram", "objective": "Engagement",
+            "caption": "Behind the scenes with the team. Something exciting is coming.",
+            "cta": "Follow", "offer": "", "hashtags": "#bts #comingsoon",
+            "variant_group": None, "variant_label": None,
+            "status": "Draft", "created_at": now_iso()
+        })
+        # Advertising budget
+        allocated = round(sum(cp.get("budget", 0) for cp in camps) * 1.1, 2) or 100000
+        await db.budgets.insert_one({
+            "id": new_id(), "client_id": c["id"], "period": "monthly",
+            "category": "advertising", "allocated": allocated,
+            "notes": "Monthly ad spend budget", "created_at": now_iso()
+        })
+        # Sample invoice
+        n = await db.invoices.count_documents({})
+        await db.invoices.insert_one({
+            "id": new_id(), "client_id": c["id"], "number": f"VX-2026{n+1001}",
+            "amount": c.get("monthly_retainer", 25000),
+            "tax": round(c.get("monthly_retainer", 25000) * 0.18, 2),
+            "total": round(c.get("monthly_retainer", 25000) * 1.18, 2),
+            "due_date": (datetime.now(timezone.utc) + timedelta(days=15)).isoformat(),
+            "status": random.choice(["Sent","Paid","Sent"]),
+            "line_items": [{"description": f"Monthly retainer — {c['name']}", "amount": c.get("monthly_retainer", 25000)}],
+            "created_at": now_iso()
+        })
+    logger.info("Phase 2 seed complete.")
+
 
 app.include_router(api)
 app.add_middleware(

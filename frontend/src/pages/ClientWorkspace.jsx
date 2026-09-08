@@ -5,13 +5,14 @@ import { KpiCard, StatusBadge, SectionHeader, EmptyState } from "../components/a
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, CartesianGrid, Legend } from "recharts";
 import { useApp } from "../context/AppContext";
 import { toast } from "sonner";
-import { Sparkles, Plus, Wand2, CheckCircle2, XCircle } from "lucide-react";
+import { Sparkles, Plus, Wand2, CheckCircle2, XCircle, Zap } from "lucide-react";
+import { CreativeIntelTab, RiskTab, BudgetTab } from "./CreativeIntel";
 
 const COLORS = ["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6","#3B82F6"];
 
 const TABS = [
-  "Overview","Campaigns","Content","Calendar","Tasks","Projects","Leads",
-  "Approvals","SEO","Analytics","AI Insights","ML Lab","Reports","Activity","Brand"
+  "Overview","Campaigns","Creative Intel","Content","Calendar","Tasks","Projects","Leads",
+  "Approvals","SEO","Analytics","AI Insights","ML Lab","Risk","Budget","Reports","Activity","Brand"
 ];
 
 export default function ClientWorkspace() {
@@ -63,6 +64,7 @@ export default function ClientWorkspace() {
       <div className="animate-fade-in-up">
         {tab === "Overview" && <OverviewTab dash={dash}/>}
         {tab === "Campaigns" && <CrudTab cid={cid} kind="campaigns" fields={["name","platform","objective","status","budget","spend","revenue","conversions"]} required={["name"]}/>}
+        {tab === "Creative Intel" && <CreativeIntelTab cid={cid}/>}
         {tab === "Content" && <ContentTab cid={cid}/>}
         {tab === "Calendar" && <CalendarTab cid={cid}/>}
         {tab === "Tasks" && <TasksTab cid={cid}/>}
@@ -73,6 +75,8 @@ export default function ClientWorkspace() {
         {tab === "Analytics" && <OverviewTab dash={dash}/>}
         {tab === "AI Insights" && <AITab cid={cid}/>}
         {tab === "ML Lab" && <MLTab cid={cid}/>}
+        {tab === "Risk" && <RiskTab cid={cid}/>}
+        {tab === "Budget" && <BudgetTab cid={cid}/>}
         {tab === "Reports" && <ReportsTab cid={cid} client={client}/>}
         {tab === "Activity" && <ActivityTab cid={cid}/>}
         {tab === "Brand" && <BrandTab client={client}/>}
@@ -509,6 +513,12 @@ function AITab({cid}){
               <div className="text-sm text-slate-200 mt-1">{i.recommendation}</div>
               <div className="mt-2 vx-status-badge vx-badge-success">{i.expected_impact}</div>
             </div>
+            <button data-testid={`insight-to-task-${i.id}`}
+              onClick={async ()=>{ try{ await api.post("/ai/insight-to-task", {insight_id: i.id, due_days: 3}); toast.success("Task created from recommendation"); load(); } catch(e){ toast.error("Failed"); } }}
+              disabled={i.status === "Accepted"}
+              className="vx-btn-primary w-full mt-3 flex items-center justify-center gap-2 disabled:opacity-50">
+              <Zap size={12}/>{i.status === "Accepted" ? "Task created" : "Create Task"}
+            </button>
           </div>
         ))}
       </div>

@@ -1,12 +1,13 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useApp } from "../context/AppContext";
 import {
   LayoutDashboard, Users, Briefcase, Megaphone, ListTodo, CalendarDays,
   UsersRound, CheckCircle2, LineChart, FileBarChart, Share2, Sparkles,
   Bell, Search, ChevronDown, LogOut, Settings, PanelLeftClose, PanelLeftOpen,
-  Radio, Target, FileText
+  Radio, Target, FileText, Plug, AlertTriangle
 } from "lucide-react";
+import { api } from "../lib/api";
 
 const NAV_GROUPS = [
   { label: "Global", items: [
@@ -29,6 +30,20 @@ const NAV_GROUPS = [
   { label: "Intelligence", items: [
     { to: "/analytics", icon: LineChart, name: "Analytics", testId: "nav-analytics" },
     { to: "/ai", icon: Sparkles, name: "AI Insights", testId: "nav-ai" },
+    { to: "/risk", icon: AlertTriangle, name: "Risk Center", testId: "nav-risk" },
+  ]},
+  { label: "Operations", items: [
+    { to: "/notifications", icon: Bell, name: "Notifications", testId: "nav-notifications" },
+    { to: "/integrations", icon: Plug, name: "Integrations", testId: "nav-integrations" },
+  ]},
+];
+
+const CLIENT_PORTAL_NAV = [
+  { label: "Portal", items: [
+    { to: "/portal", icon: LayoutDashboard, name: "Overview", testId: "nav-portal-overview" },
+    { to: "/portal/approvals", icon: CheckCircle2, name: "Approvals", testId: "nav-portal-approvals" },
+    { to: "/portal/reports", icon: FileBarChart, name: "Reports", testId: "nav-portal-reports" },
+    { to: "/portal/notifications", icon: Bell, name: "Updates", testId: "nav-portal-notifications" },
   ]},
 ];
 
@@ -36,7 +51,20 @@ export default function AppShell({ children }) {
   const { user, clients, activeClient, switchClient, logout } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifData, setNotifData] = useState({notifications: [], unread: 0});
   const nav = useNavigate();
+
+  const isClientRole = user?.role === "client";
+  const groups = isClientRole ? CLIENT_PORTAL_NAV : NAV_GROUPS;
+
+  useEffect(() => {
+    if (!user) return;
+    const fetchNotif = () => api.get("/notifications").then(r => setNotifData(r.data)).catch(()=>{});
+    fetchNotif();
+    const t = setInterval(fetchNotif, 30000);
+    return () => clearInterval(t);
+  }, [user]);
 
   if (user === null) return <div className="p-8 text-slate-400">Loading…</div>;
 
@@ -52,8 +80,8 @@ export default function AppShell({ children }) {
           </button>
         </div>
 
-        {/* Client Switcher */}
-        {!collapsed && (
+        {/* Client Switcher — hidden for client role */}
+        {!collapsed && !isClientRole && (
           <div className="p-3 border-b border-[var(--vx-border)] relative">
             <button data-testid="client-switcher-btn" onClick={() => setSwitcherOpen(!switcherOpen)}
               className="w-full flex items-center gap-2 p-2 rounded-lg bg-[var(--vx-card)] hover:bg-[var(--vx-card-hover)] border border-[var(--vx-border)]">
@@ -83,7 +111,7 @@ export default function AppShell({ children }) {
         )}
 
         <nav className="flex-1 overflow-y-auto p-3 space-y-4">
-          {NAV_GROUPS.map(g => (
+          {groups.map(g => (
             <div key={g.label}>
               {!collapsed && <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold px-2 mb-2">{g.label}</div>}
               <div className="space-y-1">
@@ -120,10 +148,29 @@ export default function AppShell({ children }) {
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"/>
             <input data-testid="global-search-input" placeholder="Search clients, campaigns, tasks…" className="vx-input pl-9"/>
           </div>
-          <button data-testid="notifications-btn" className="relative p-2 text-slate-400 hover:text-white">
+          <button data-testid="notifications-btn" onClick={()=>setNotifOpen(!notifOpen)} className="relative p-2 text-slate-400 hover:text-white">
             <Bell size={16}/>
-            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[var(--vx-amber)]"/>
+            {notifData.unread > 0 && <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[var(--vx-amber)] text-[9px] font-bold text-[var(--vx-canvas)] flex items-center justify-center">{notifData.unread}</span>}
           </button>
+          {notifOpen && (
+            <div className="absolute right-4 top-14 w-96 bg-[var(--vx-popover)] border border-[var(--vx-border-active)] rounded-xl shadow-2xl z-50 overflow-hidden" data-testid="notifications-dropdown">
+              <div className="p-3 border-b border-[var(--vx-border)] flex justify-between items-center">
+                <span className="text-sm font-semibold">Notifications</span>
+                <button data-testid="notif-see-all" onClick={()=>{setNotifOpen(false); nav("/notifications");}} className="text-xs text-amber-400 hover:underline">See all</button>
+              </div>
+              <div className="max-h-96 overflow-y-auto">
+                {notifData.notifications.length === 0 ? <div className="p-6 text-center text-xs text-slate-500">No notifications</div> :
+                 notifData.notifications.slice(0,6).map(n => (
+                  <div key={n.id} onClick={()=>{setNotifOpen(false); if(n.link) nav(n.link);}} className={`p-3 border-b border-[var(--vx-border)] hover:bg-[var(--vx-card-hover)] cursor-pointer ${!n.read?"bg-amber-500/5":""}`}>
+                    <div className="flex items-start gap-2">
+                      <span className={`w-1.5 h-1.5 mt-1.5 rounded-full shrink-0 ${n.severity==="critical"?"bg-red-400":n.severity==="warning"?"bg-amber-400":"bg-cyan-400"}`}/>
+                      <div className="flex-1"><div className="text-xs font-medium">{n.title}</div><div className="text-[11px] text-slate-500 mt-0.5">{n.message}</div></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <button data-testid="settings-btn" onClick={() => nav("/settings")} className="p-2 text-slate-400 hover:text-white"><Settings size={16}/></button>
         </header>
         <div className="flex-1 p-6 animate-fade-in-up">{children}</div>

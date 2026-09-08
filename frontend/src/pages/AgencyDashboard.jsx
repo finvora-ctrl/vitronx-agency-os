@@ -5,6 +5,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart,
 import { useNavigate } from "react-router-dom";
 import { useApp } from "../context/AppContext";
 import { AlertTriangle, Zap } from "lucide-react";
+import { NeedsAttentionSection } from "./Phase2Pages";
 
 const CHART_COLORS = ["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6","#3B82F6"];
 
@@ -82,6 +83,8 @@ export default function AgencyDashboard() {
           </div>
         </div>
       </div>
+
+      <NeedsAttentionSection/>
 
       <div className="vx-card p-5">
         <SectionHeader title="Client Health Matrix" subtitle="Open a workspace to drill into a client"/>
