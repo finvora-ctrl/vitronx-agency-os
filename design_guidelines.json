@@ -1,0 +1,285 @@
+{
+  "project_overview": {
+    "name": "VITRONX",
+    "tagline": "AI-Powered Operating System for Digital Marketing Agencies",
+    "app_type": "hybrid_fullstack (SaaS dashboard product)",
+    "description": "Multi-tenant digital marketing agency OS where agencies manage high-volume clients, campaigns, social calendars, Kanban task boards, AI recommendation engines, ad spend analytics, approval queues, and lead pipelines."
+  },
+  "archetype_and_theme": {
+    "archetype": "ARCHETYPE 2 & 4 HYBRID: Tactical Performance Pro meets Swiss Precision",
+    "theme_mode": "Dark Theme Primary (Linear + ClickUp + HubSpot inspired)",
+    "design_philosophy": "Deep slate/obsidian canvas (#0A0C10) with crisp subtle borders (#1E222D), layered elevation gray shifts (#11141B, #161A23), and Electric Amber-Cyan dual accents (#FF9F1C electric amber for tactical urgency, #00E5FF cyan electric pulse for AI intelligence). Rejects generic purple/violet gradients in favor of high-density clarity and long-session ergonomic comfort.",
+    "anti_patterns_banned": [
+      "No generic purple/violet gradients (#7351B7 or indigo slop)",
+      "No pure #000000 black canvas (causes eye fatigue on long agency workflows)",
+      "No unstyled default HTML select/date inputs",
+      "No transparent dropdown menus or headers without blur and solid backdrop",
+      "No center-everything layouts for data tables and dashboard grids",
+      "No missing data-testid attributes on interactive elements"
+    ]
+  },
+  "typography": {
+    "heading_font": "Outfit, Plus Jakarta Sans, sans-serif",
+    "body_font": "Inter, DM Sans, sans-serif",
+    "mono_font": "JetBrains Mono, Fira Code, monospace",
+    "hierarchy": {
+      "h1_hero": "text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-slate-50 leading-tight",
+      "h2_section": "text-2xl sm:text-3xl font-bold tracking-tight text-slate-100",
+      "h3_card": "text-lg sm:text-xl font-semibold text-slate-200 tracking-snug",
+      "h4_widget": "text-base font-medium text-slate-300",
+      "body_base": "text-sm text-slate-300 leading-relaxed",
+      "body_small": "text-xs text-slate-400 leading-normal",
+      "caption_overline": "text-[11px] font-bold uppercase tracking-[0.18em] text-amber-400/90"
+    }
+  },
+  "color_tokens": {
+    "canvas_bg": "#0A0C10",
+    "sidebar_bg": "#0E1117",
+    "card_bg": "#121620",
+    "card_bg_hover": "#171C28",
+    "popover_modal_bg": "#1A202C",
+    "border_subtle": "#1E2432",
+    "border_active": "#2A3346",
+    "border_accent_amber": "#FF9F1C",
+    "border_accent_cyan": "#00E5FF",
+    "brand_accents": {
+      "primary_amber": "#FF9F1C",
+      "primary_amber_glow": "rgba(255, 159, 28, 0.15)",
+      "ai_cyan": "#00E5FF",
+      "ai_cyan_glow": "rgba(0, 229, 255, 0.12)",
+      "neutral_fg": "#F8FAFC",
+      "neutral_muted": "#94A3B8"
+    },
+    "status_tokens": {
+      "success": {
+        "text": "#10B981",
+        "bg": "rgba(16, 185, 129, 0.12)",
+        "border": "#059669"
+      },
+      "warning": {
+        "text": "#F59E0B",
+        "bg": "rgba(245, 158, 11, 0.12)",
+        "border": "#D97706"
+      },
+      "danger": {
+        "text": "#EF4444",
+        "bg": "rgba(239, 68, 68, 0.12)",
+        "border": "#DC2626"
+      },
+      "info": {
+        "text": "#3B82F6",
+        "bg": "rgba(59, 130, 246, 0.12)",
+        "border": "#2563EB"
+      },
+      "ai_pulse": {
+        "text": "#00E5FF",
+        "bg": "rgba(0, 229, 255, 0.10)",
+        "border": "#00B4D8"
+      }
+    },
+    "chart_palette": [
+      "#FF9F1C",
+      "#00E5FF",
+      "#10B981",
+      "#F43F5E",
+      "#8B5CF6",
+      "#3B82F6"
+    ]
+  },
+  "sidebar_and_layout": {
+    "shell_structure": "Fixed Left Sidebar (256px expanded / 68px collapsed) + Top Command Navigation Bar + Main Dynamic Scroll Area",
+    "client_switcher": "Header dropdown in sidebar featuring client logo, tier badge, workspace status (e.g. Acme Corp - Enterprise, Apex Health - Growth), search filter, and quick '+ Add Client' modal trigger.",
+    "navigation_groups": [
+      {
+        "group": "Global Agency",
+        "items": [
+          "Agency Overview",
+          "All Clients Health",
+          "Executive Reports",
+          "Team Workload",
+          "Agency Billing"
+        ]
+      },
+      {
+        "group": "Client Workspace (20+ Tabs)",
+        "items": [
+          "Overview",
+          "Brand & Strategy",
+          "Projects",
+          "Campaigns",
+          "Social Hub",
+          "Content Library",
+          "Calendar",
+          "Creatives Vault",
+          "Shoots & Assets",
+          "Tasks (Kanban)",
+          "Team Roster",
+          "Approvals Queue",
+          "Lead CRM Pipeline",
+          "Website & Landing",
+          "SEO Audit",
+          "Ads Manager",
+          "Analytics",
+          "Custom Reports",
+          "Documents & Vault",
+          "Communication & Slack",
+          "Budget & Invoicing",
+          "AI Insights & Recommendations"
+        ]
+      }
+    ]
+  },
+  "component_styles": {
+    "kpi_card": {
+      "wrapper": "bg-[#121620] border border-[#1E2432] hover:border-[#2A3346] rounded-xl p-5 shadow-sm transition-all duration-200 group relative overflow-hidden",
+      "indicator_line": "absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-amber-500 to-cyan-400 opacity-80",
+      "title": "text-xs font-medium uppercase tracking-wider text-slate-400 flex items-center justify-between",
+      "value": "text-2xl sm:text-3xl font-bold text-slate-50 tracking-tight mt-2 font-mono",
+      "delta": "inline-flex items-center text-xs font-semibold px-2 py-0.5 rounded-full mt-2"
+    },
+    "ai_recommendation_card": {
+      "wrapper": "bg-gradient-to-br from-[#121927] to-[#121620] border border-cyan-500/30 hover:border-cyan-400/60 rounded-xl p-5 relative shadow-[0_0_20px_rgba(0,229,255,0.05)]",
+      "badge": "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase tracking-widest",
+      "action_btn": "bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg shadow-sm transition-colors cursor-pointer"
+    },
+    "data_table": {
+      "wrapper": "w-full border border-[#1E2432] rounded-xl overflow-hidden bg-[#121620]",
+      "header_row": "bg-[#0E1117] border-b border-[#1E2432] text-xs font-semibold text-slate-400 uppercase tracking-wider text-left",
+      "body_row": "border-b border-[#1E2432]/60 hover:bg-[#171C28] transition-colors text-sm text-slate-200",
+      "pagination": "p-4 bg-[#0E1117] border-t border-[#1E2432] flex items-center justify-between text-xs text-slate-400"
+    },
+    "kanban_board": {
+      "column_header": "bg-[#0E1117] p-3 rounded-lg border border-[#1E2432] flex items-center justify-between font-semibold text-xs text-slate-300 tracking-wide uppercase",
+      "card": "bg-[#121620] border border-[#1E2432] hover:border-[#2A3346] p-4 rounded-lg shadow-md cursor-grab active:cursor-grabbing hover:-translate-y-0.5 transition-all"
+    },
+    "command_palette": {
+      "backdrop": "fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-start justify-center pt-24 p-4",
+      "box": "w-full max-w-2xl bg-[#121620] border border-[#2A3346] rounded-2xl shadow-2xl overflow-hidden"
+    }
+  },
+  "hero_screen_concepts": [
+    {
+      "screen_id": "global_agency_dashboard",
+      "title": "Global Agency Command Hub",
+      "description": "Cross-client health telemetry, MRR breakdown, active team workload, pending approval alerts, and high-impact AI agency insights.",
+      "key_elements": [
+        "Agency MRR & Ad Spend KPI Bar",
+        "Client Health Matrix Grid (Status badges, ROAS, Campaign Pace)",
+        "Approval Queue Urgent Triage Widget",
+        "Agency Wide AI Revenue Opportunity Drawer"
+      ]
+    },
+    {
+      "screen_id": "client_workspace_overview",
+      "title": "Client Specific Workspace (360 Command)",
+      "description": "Unified client workspace with 20+ tabs switcher, live campaign performance chart, active deliverables, and client brand guidelines fast-vault.",
+      "key_elements": [
+        "Client Header with MRR, Retainer Tier & Client Switcher Quick Link",
+        "Tab Navigation Bar (Overview, Campaigns, Social, Tasks, SEO, Ads, AI Insights, etc.)",
+        "Live Multi-Channel ROAS & Conversion Funnel Chart",
+        "Recent Client Activity & Approval Feed"
+      ]
+    },
+    {
+      "screen_id": "content_calendar_dragdrop",
+      "title": "Omnichannel Social Content Calendar",
+      "description": "Drag-and-drop calendar view with platform filters (Instagram, LinkedIn, TikTok, YouTube, X), copy preview, media thumbnails, and status triggers.",
+      "key_elements": [
+        "Month/Week/Day Grid view with status chips (Draft, In Review, Approved, Scheduled)",
+        "Platform Filter Pills with live status count",
+        "Drag & Drop scheduling slot hover indicators",
+        "Side panel post builder with AI Copy Enhancer"
+      ]
+    },
+    {
+      "screen_id": "kanban_task_board",
+      "title": "Agency Task & Workflow Board",
+      "description": "High-density agile task management board categorized by Workflow Stage (Backlog, In Progress, Creative Review, Client Approval, Done).",
+      "key_elements": [
+        "Custom Swimlanes by Client or Campaign",
+        "Task Cards with assignee avatars, priority badges, subtask count, and deadline status",
+        "Filter by Assignee, Tag, Priority, and Due Date"
+      ]
+    },
+    {
+      "screen_id": "ai_insights_recommendations",
+      "title": "AI Growth Engine & Recommendation Matrix",
+      "description": "Real-time AI monitoring of ad fatigue, budget re-allocation opportunities, SEO keywords gaps, and viral hooks for active campaigns.",
+      "key_elements": [
+        "AI Confidence Score Indicators (e.g. 98% Confidence)",
+        "One-Click 'Execute Recommendation' Actions",
+        "Predictive Impact Metric (+24% ROAS estimated)",
+        "Historical AI Action Logs"
+      ]
+    },
+    {
+      "screen_id": "lead_crm_pipeline",
+      "title": "Agency & Client Lead Pipeline",
+      "description": "Visual deal pipeline for prospective client proposals or B2B/D2C client lead acquisition.",
+      "key_elements": [
+        "Pipeline Stages (New Lead, Qualified, Demo Scheduled, Proposal Sent, Closed Won)",
+        "Lead scoring badges & activity timeline",
+        "Quick call/email logger"
+      ]
+    },
+    {
+      "screen_id": "approval_workflow_queue",
+      "title": "Client Deliverable Approval Queue",
+      "description": "Dedicated portal where agency managers and clients review creative assets, video edits, ad copies, and monthly budgets with version history.",
+      "key_elements": [
+        "Side-by-side asset comparison modal",
+        "Timestamped comments & markup feedback",
+        "One-tap 'Approve & Schedule' or 'Request Revisions' actions"
+      ]
+    }
+  ],
+  "image_urls": {
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1544723495-432537d12f6c?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Executive Male Portrait Avatar"
+      }
+    ],
+    "brand_logos": [
+      {
+        "url": "https://images.unsplash.com/photo-1638864616270-64041b699a50?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Geometric Minimalist Tech Logo Mark"
+      }
+    ],
+    "creative_assets": [
+      {
+        "url": "https://images.unsplash.com/photo-1758613654806-fa787b741bba?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Production Studio Shoot Concept"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1784407082880-7614c3597fd2?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Minimalist Mobile Ad Showcase"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1764694187688-454d172e5ca0?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Cosmetic Serum Campaign Creative"
+      }
+    ]
+  },
+  "motion_and_interactions": {
+    "library": "framer-motion, lucide-react, sonner",
+    "transitions": "Use specific property transitions (e.g. transition-colors duration-150, transform duration-200 ease-out). Never use universal transition: all.",
+    "micro_interactions": [
+      "Hover lift on Kanban cards (-translate-y-0.5)",
+      "Smooth glow shift on AI Recommendation cards",
+      "Staggered entrance animations for dashboard grid cards (opacity 0 to 1, y: 10 to 0)",
+      "Tab line slider with layoutId on active tab navigation"
+    ]
+  },
+  "accessibility_and_testing": {
+    "data_testid_rule": "ALL interactive elements (buttons, inputs, tabs, dropdown items, quick action icons, modal triggers, pagination controls, table headers) MUST include kebab-case data-testid attributes (e.g., data-testid='client-switcher-button', data-testid='tab-campaigns-trigger', data-testid='approve-deliverable-btn').",
+    "contrast_standards": "All text tokens meet APCA / WCAG AA 4.5:1 minimum on #0A0C10 canvas and #121620 card surfaces."
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "rule_1": "Create depth through layered gray elevations (#0A0C10 base, #0E1117 sidebar, #121620 card, #171C28 hover/active surface) with crisp 1px borders (#1E2432).",
+    "rule_2": "Do NOT use default HTML select or date pickers. Build custom or Shadcn dropdown/calendar components.",
+    "rule_3": "Do NOT use full-page purple/violet gradients. Maintain strict adherence to Electric Amber (#FF9F1C) for urgency/CTAs and Cyan Pulse (#00E5FF) for AI features.",
+    "rule_4": "Ensure every clickable element has a explicit hover state that modifies background/border/text color together.",
+    "rule_5": "Always include `data-testid` on all buttons, tabs, inputs, links, cards, and modal controls for end-to-end testing stability."
+  }
+}
