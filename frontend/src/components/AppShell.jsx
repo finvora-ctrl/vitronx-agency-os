@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useApp } from "../context/AppContext";
+import { GlobalSearchBox } from "../pages/Phase3Kit";
 import {
   LayoutDashboard, Users, Briefcase, Megaphone, ListTodo, CalendarDays,
   UsersRound, CheckCircle2, LineChart, FileBarChart, Share2, Sparkles,
@@ -144,10 +145,7 @@ export default function AppShell({ children }) {
       {/* Main */}
       <main className="flex flex-col min-h-screen">
         <header className="h-14 border-b border-[var(--vx-border)] px-6 flex items-center gap-4 bg-[var(--vx-canvas)] sticky top-0 z-20">
-          <div className="flex-1 max-w-xl relative">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"/>
-            <input data-testid="global-search-input" placeholder="Search clients, campaigns, tasks…" className="vx-input pl-9"/>
-          </div>
+          <GlobalSearchBox/>
           <button data-testid="notifications-btn" onClick={()=>setNotifOpen(!notifOpen)} className="relative p-2 text-slate-400 hover:text-white">
             <Bell size={16}/>
             {notifData.unread > 0 && <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[var(--vx-amber)] text-[9px] font-bold text-[var(--vx-canvas)] flex items-center justify-center">{notifData.unread}</span>}

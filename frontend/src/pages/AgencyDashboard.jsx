@@ -6,6 +6,8 @@ import { useNavigate } from "react-router-dom";
 import { useApp } from "../context/AppContext";
 import { AlertTriangle, Zap } from "lucide-react";
 import { NeedsAttentionSection } from "./Phase2Pages";
+import { DailyBriefCard } from "./Phase3Kit";
+import { fmtINR } from "../lib/fmt";
 
 const CHART_COLORS = ["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6","#3B82F6"];
 
@@ -36,9 +38,9 @@ export default function AgencyDashboard() {
         <KpiCard testId="kpi-approvals" label="Pending Approvals" value={k.pending_approvals}/>
         <KpiCard testId="kpi-leads" label="Leads (30d)" value={k.total_leads}/>
         <KpiCard testId="kpi-health" label="Avg Health" value={k.avg_health} suffix="/100"/>
-        <KpiCard testId="kpi-retainer" label="Monthly Retainer" prefix="$" value={k.monthly_retainer.toLocaleString()}/>
-        <KpiCard testId="kpi-spend" label="Ad Spend" prefix="$" value={k.monthly_spend.toLocaleString()}/>
-        <KpiCard testId="kpi-revenue" label="Ad Revenue" prefix="$" value={k.monthly_revenue.toLocaleString()}/>
+        <KpiCard testId="kpi-retainer" label="Monthly Retainer" value={fmtINR(k.monthly_retainer)}/>
+        <KpiCard testId="kpi-spend" label="Ad Spend" value={fmtINR(k.monthly_spend)}/>
+        <KpiCard testId="kpi-revenue" label="Ad Revenue" value={fmtINR(k.monthly_revenue)}/>
         <KpiCard testId="kpi-roas" label="Blended ROAS" value={k.avg_roas} suffix="x"/>
         <KpiCard testId="kpi-tasks" label="Open Tasks" value={k.tasks_due_today}/>
         <KpiCard testId="kpi-alerts" label="Today's Alerts" value={4} hint="triage"/>
@@ -46,8 +48,7 @@ export default function AgencyDashboard() {
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 vx-card p-5">
-          <SectionHeader title="12-Week Performance" subtitle="Revenue vs Ad spend across all clients"/>
-          <ResponsiveContainer width="100%" height={280}>
+          <SectionHeader title="12-Week Performance" subtitle="Revenue vs Ad spend across all clients"/>          <ResponsiveContainer width="100%" height={280}>
             <AreaChart data={data.trend}>
               <defs>
                 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#FF9F1C" stopOpacity={0.4}/><stop offset="95%" stopColor="#FF9F1C" stopOpacity={0}/></linearGradient>
@@ -86,6 +87,24 @@ export default function AgencyDashboard() {
 
       <NeedsAttentionSection/>
 
+      <div className="grid lg:grid-cols-2 gap-6">
+        <DailyBriefCard/>
+        <div className="vx-card p-5">
+          <SectionHeader title="Client Retainer Breakdown" subtitle="Monthly recurring revenue by client"/>
+          <div className="space-y-2">
+            {data.clients.map(c => (
+              <div key={c.id} className="flex justify-between items-center p-2 bg-[var(--vx-card-hover)] rounded-lg">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold text-[var(--vx-canvas)]" style={{background:c.logo_color}}>{c.name[0]}</div>
+                  <span className="text-sm">{c.name}</span>
+                </div>
+                <span className="font-mono text-sm">{fmtINR(c.monthly_retainer)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="vx-card p-5">
         <SectionHeader title="Client Health Matrix" subtitle="Open a workspace to drill into a client"/>
         <div className="overflow-x-auto">
@@ -107,7 +126,7 @@ export default function AgencyDashboard() {
                   <td className="text-slate-400">{c.industry}</td>
                   <td className="font-mono">{c.campaigns}</td>
                   <td className="font-mono">{c.leads}</td>
-                  <td className="font-mono">${c.monthly_retainer.toLocaleString()}</td>
+                  <td className="font-mono">{fmtINR(c.monthly_retainer)}</td>
                   <td>
                     <div className="flex items-center gap-2">
                       <div className="w-16 h-1.5 bg-[var(--vx-border)] rounded-full overflow-hidden">

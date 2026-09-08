@@ -7,7 +7,7 @@
 """
 import math
 import random
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timezone
 import numpy as np
 
@@ -378,3 +378,106 @@ def compute_client_risk(client: Dict[str, Any], campaigns: List[Dict[str, Any]],
                     "overdue_tasks": len(overdue), "pending_approvals": len(pending),
                     "scheduled_content": scheduled, "health_score": health}
     }
+
+
+# ---------- Random Forest CTR Prediction (Phase 3) ----------
+_CTR_MODEL = {"model": None, "features": None, "metrics": None, "trained_at": None,
+              "importance": None, "version": "rf-ctr-v1"}
+
+_PLATFORM_MAP = {"Instagram": 0, "Facebook": 1, "LinkedIn": 2, "YouTube": 3, "X": 4, "TikTok": 5}
+_CT_MAP = {"Reel": 0, "Carousel": 1, "Video": 2, "Story": 3, "Social Post": 4, "Ad Creative": 5, "Blog": 6}
+_OBJ_MAP = {"Awareness": 0, "Engagement": 1, "Traffic": 2, "Lead Generation": 3, "Conversions": 4, "Sales": 5}
+
+
+def _creative_to_features(c: Dict[str, Any]) -> List[float]:
+    f = extract_creative_features(c)
+    caption = (c.get("caption") or "")
+    return [
+        _PLATFORM_MAP.get(c.get("platform","Instagram"), 0),
+        _CT_MAP.get(c.get("content_type","Social Post"), 4),
+        _OBJ_MAP.get(c.get("objective","Awareness"), 0),
+        f["has_cta"], f["has_offer"], f["caption_len_score"], f["hashtag_score"],
+        f["content_type_score"], f["platform_objective_fit"],
+        len(caption), (c.get("hashtags") or "").count("#"),
+    ]
+
+
+def train_ctr_model(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Train Random Forest CTR model with train/test split + metrics + feature importance."""
+    try:
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    except ImportError:
+        return {"status": "sklearn_unavailable"}
+
+    valid = [r for r in records if r.get("actual_ctr") is not None and r.get("actual_impressions", 0) > 0]
+    if len(valid) < 8:
+        return {"status": "insufficient_data", "samples": len(valid), "min_required": 8}
+
+    X = np.array([_creative_to_features(r) for r in valid])
+    y = np.array([r["actual_ctr"] for r in valid])
+    feature_names = ["platform","content_type","objective","has_cta","has_offer",
+                     "caption_len_score","hashtag_score","content_type_score",
+                     "platform_objective_fit","caption_chars","hashtag_count"]
+
+    if len(valid) >= 20:
+        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, random_state=42)
+    else:
+        Xtr, ytr = X, y; Xte, yte = X, y  # small dataset: use all
+
+    model = RandomForestRegressor(n_estimators=80, max_depth=6, random_state=42, n_jobs=-1)
+    model.fit(Xtr, ytr)
+    ypred = model.predict(Xte)
+
+    mae = float(mean_absolute_error(yte, ypred))
+    rmse = float(np.sqrt(mean_squared_error(yte, ypred)))
+    r2 = float(r2_score(yte, ypred)) if len(yte) > 1 else 0.0
+    mask = yte != 0
+    mape = float(np.mean(np.abs((yte[mask] - ypred[mask]) / yte[mask])) * 100) if mask.any() else 0.0
+
+    # Baseline linear regression for comparison
+    from sklearn.linear_model import LinearRegression
+    lr = LinearRegression().fit(Xtr, ytr)
+    lr_pred = lr.predict(Xte)
+    lr_mae = float(mean_absolute_error(yte, lr_pred))
+    lr_r2 = float(r2_score(yte, lr_pred)) if len(yte) > 1 else 0.0
+
+    importance = sorted(
+        [{"feature": feature_names[i], "importance": round(float(v), 4)}
+         for i, v in enumerate(model.feature_importances_)],
+        key=lambda x: -x["importance"]
+    )
+
+    _CTR_MODEL["model"] = model
+    _CTR_MODEL["features"] = feature_names
+    _CTR_MODEL["metrics"] = {
+        "algorithm": "RandomForestRegressor(n_estimators=80, max_depth=6)",
+        "train_records": len(Xtr), "test_records": len(Xte),
+        "mae": round(mae, 4), "rmse": round(rmse, 4), "r2": round(r2, 4), "mape": round(mape, 2),
+        "baseline_lr": {"mae": round(lr_mae, 4), "r2": round(lr_r2, 4)},
+    }
+    _CTR_MODEL["importance"] = importance
+    _CTR_MODEL["trained_at"] = datetime.now(timezone.utc).isoformat()
+    return {"status": "trained", **_CTR_MODEL["metrics"], "importance": importance,
+            "model_version": _CTR_MODEL["version"], "trained_at": _CTR_MODEL["trained_at"],
+            "total_samples": len(valid)}
+
+
+def predict_ctr_rf(creative: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if _CTR_MODEL["model"] is None:
+        return None
+    x = np.array([_creative_to_features(creative)])
+    pred = float(_CTR_MODEL["model"].predict(x)[0])
+    return {"predicted_ctr_rf": round(max(pred, 0), 3),
+            "model_version": _CTR_MODEL["version"],
+            "trained_at": _CTR_MODEL["trained_at"]}
+
+
+def get_trained_ctr_model() -> Dict[str, Any]:
+    if _CTR_MODEL["model"] is None:
+        return {"status": "untrained"}
+    return {"status": "trained", "metrics": _CTR_MODEL["metrics"],
+            "importance": _CTR_MODEL["importance"],
+            "model_version": _CTR_MODEL["version"],
+            "trained_at": _CTR_MODEL["trained_at"]}

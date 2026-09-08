@@ -1,7 +1,7 @@
-# VITRONX — Product Requirements Document
+# VITRONX — Product Requirements Document (Phase 3)
 
 ## Vision
-AI-Powered Operating System for Digital Marketing Agencies. Multi-tenant SaaS for agency ops + client workspaces + ML/AI decision support with closed feedback loops.
+India-first AI-powered Operating System for Digital Marketing Agencies. Multi-tenant SaaS with agency ops + client workspaces + ML/AI decision support + INR/GST financial layer.
 
 ## Personas
 - Agency Admin (finvora@gmail.com / Vitronx@2026)
@@ -10,58 +10,50 @@ AI-Powered Operating System for Digital Marketing Agencies. Multi-tenant SaaS fo
 - Marketer (arjun.marketer@vitronx.demo / Demo@2026)
 - Client (client@vitronx.demo / Demo@2026)
 
-## Core Architecture
-- Backend: FastAPI + MongoDB (motor). JWT auth, RBAC via role + client_id scoping.
-- Frontend: React 19 + React Router 7 + Tailwind + Recharts + Sonner toasts.
-- ML: numpy (OLS, EMA, z-score, k-means, logistic scoring, Pearson, creative feature model).
-- AI: Emergent Universal Key → Gemini 3.1 Pro (rule-based fallback).
-- Integrations: provider-agnostic base class with demo/live modes.
-
-## Phase 1 (Feb 2026)
-- JWT auth, 5 seeded roles, agency dashboard, clients module, 15-tab client workspace
-- Agency-wide views (campaigns, projects, tasks, calendar, team, approvals, leads, content, analytics)
-- CRUD for clients, campaigns, projects, tasks, content, leads
-- Approval workflow with activity log
-- Rule-based AI insights + Gemini AI captions
-- Per-client analytics (KPIs, trend, pie, funnel, SEO)
-- ML Lab: OLS forecast + R², EMA smoothing, z-score anomalies, logistic lead scoring, k-means client clustering, Pearson correlation, campaign efficiency index
-
-## Phase 2 (Sept 2026 — this iteration)
-- Creative Intelligence Engine: rank_creatives, score_creative with predicted CTR, engagement, conversion potential, audience fit, historical similarity, explainable reasons, composite score, confidence, tier
-- A/B Testing: variant_group grouping, compute_ab_winner with uplift + confidence, primary metric detection (ROAS/CTR)
-- Prediction feedback loop: /ab/{id}/record persists actual metrics, prediction_error_stats returns MAE/MAPE, /ml/prediction-accuracy shows predicted vs actual chart
-- Client Risk Center: compute_client_risk with weighted drivers (health, ROAS, overdue tasks, approvals, content pipeline), risk_level, intervention recommendation, "Create Intervention Task" button
-- Agency-wide Risk Center at /risk showing all clients ranked
-- Notification center: real conditions (ROAS drop, approval backlog, overdue tasks), severity levels (critical/warning/info/success), unread badge in topbar, dropdown preview + full page, /notifications/compute endpoint
-- Client Portal (/portal): simplified nav (Overview/Approvals/Reports/Updates), backend-enforced client_id scoping, forced redirect from agency routes
-- Budget & Invoicing: budgets with utilization %, pacing status (healthy/warning/critical/overspend), auto-computed spent from campaigns, invoice CRUD with auto number + tax total
-- AI Insight → Task workflow: /ai/insight-to-task creates task, marks insight Accepted, logs activity
-- Integration layer: MetaAds/GoogleAds/GoogleAnalytics/GSC with is_configured, mode (live/demo), status endpoint, 7-day preview labeled DEMO
-- Needs Attention section: /analytics/needs-attention aggregates ROAS drops, approval backlogs, overdue tasks, budget alerts sorted by severity + score
-- Seeded creative variants (A/B/C groups) with actual performance data, ad budgets, invoices
-
-## New Backend Endpoints
-- /api/creatives (CRUD + /score, /rank/{cid})
-- /api/ab/groups/{cid}, /api/ab/{id}/record
-- /api/ml/prediction-accuracy/{cid}
-- /api/risk/{cid}, /api/risk/agency/all
-- /api/notifications (list + unread), /notifications/compute, /read, /read-all
-- /api/budgets, /api/invoices
-- /api/ai/insight-to-task
-- /api/integrations, /integrations/{provider}/preview
-- /api/analytics/needs-attention
+## Phase 3 Highlights (Sept 2026 iteration)
+- **INR everywhere**: fmtINR utility with Indian grouping (₹1,50,000 / ₹12,50,000). Every $ replaced with ₹ on dashboards, KPIs, budgets, invoices, retainers.
+- **GST invoicing**: /api/invoices/gst with auto CGST/SGST vs IGST split based on agency vs client state. Indian FY numbering (VTX/2026-27/0001). HSN/SAC codes, GSTIN, taxable value, grand total.
+- **Payment tracking**: /api/payments with UPI/NEFT/RTGS/IMPS/Bank Transfer/Cheque/Cash modes. Auto-updates invoice status to Partially_Paid / Paid.
+- **Random Forest CTR model** (sklearn): trained on all creatives with actual performance. Train/test 75/25 split. MAE=0.32, RMSE=0.47, R²=0.75 (beats LR baseline R²=0.74). Feature importance chart, top feature = platform_objective_fit.
+- **Global search** across clients/campaigns/projects/tasks/content/creatives/leads/invoices with grouped results and deep-link navigation.
+- **Daily AI Brief** on Agency Command Center: backend calculates facts (priorities, top creatives, underperforming campaigns), Gemini 3.1 Pro writes 3-bullet narrative.
+- **Client profitability**: /api/finance/profitability/{cid} — revenue (retainer + 15% mgmt fee), cost (team 30% + creative 10% + vendor 2%), gross profit + margin. Displayed on Client Overview.
+- **File uploads**: /api/uploads with local storage + /api/files/{id} serving. Thumbnails auto-linked to creatives. Preview shown in Creative Intel ranking cards.
+- **Client messaging**: threaded /api/messages tied to entities (approval/task/campaign/content/general). Full conversation panel in Client Portal + Client Overview.
+- **Indian campaigns seed**: Diwali Festive Push, Holi Colors, Independence Day Sale, Raksha Bandhan Gifting, New Year Launch — with target cities (Mumbai/Delhi/Bengaluru/Hyderabad/Chennai/Pune/Kolkata/Ahmedabad).
+- **Retainers rescaled**: All 5 clients now on realistic Indian retainers (₹2.4L–₹5.3L monthly).
 
 ## Data Isolation (Verified)
 - Client role sees only own client_id
-- 403 on cross-client analytics
-- 403 on agency-only endpoints (risk/agency/all)
-- Frontend forced redirect: client role → /portal
+- HTTP 403 on cross-client analytics/risk/agency endpoints
+- Search backend-scoped to client_id for client role
 
-## Backlog
-- Meta / Google Ads / GA4 / GSC live API wiring
-- Object storage uploads for creatives, brand assets, documents
-- Global search across entities
-- Onboarding wizard
-- PDF report export
-- Custom dashboard widgets
-- Client portal: full messaging + document exchange
+## New Backend Endpoints (Phase 3)
+- POST /api/invoices/gst, POST /api/invoices/{id}/status
+- POST /api/payments, GET /api/payments
+- POST /api/uploads, GET /api/files/{id}, GET/DELETE /api/assets
+- GET/POST /api/messages
+- GET /api/search?q=
+- GET /api/finance/profitability/{cid}, GET /api/finance/profitability
+- POST /api/ml/ctr-model/train, GET /api/ml/ctr-model, GET /api/ml/ctr-model/predict/{cid}
+- GET /api/analytics/daily-brief
+
+## Tech
+- Backend: FastAPI + MongoDB + numpy + sklearn (RF/LinReg) + bcrypt + PyJWT + Motor
+- Frontend: React 19 + Router 7 + Tailwind + Recharts + Sonner
+- AI: Emergent Universal Key → Gemini 3.1 Pro
+- Storage: Local FS at /app/backend/uploads (preview-only; migrate to Emergent Object Storage for deployment)
+
+## Known Limitations
+- File uploads use pod-local storage — needs Emergent Object Storage before production deploy
+- Meta/Google Ads/Analytics still in DEMO mode (integration layer ready for creds)
+- No PDF report export yet
+- Onboarding wizard not shipped this iteration
+
+## Backlog / Recommended Next Steps
+- Migrate uploads to Emergent Object Storage
+- Onboarding wizard (5-min flow to first campaign)
+- PDF branded reports (reportlab or WeasyPrint)
+- Wire real Meta/Google Ads credentials into integration layer
+- Lead conversion model (Logistic Regression) with probability + tier
+- Isolation Forest anomaly detection for campaigns

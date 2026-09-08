@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field, EmailStr
 from ml import (linear_forecast, zscore_anomalies, ema, score_lead,
                 cluster_clients, campaign_efficiency_index, pearson_correlation,
                 score_creative, rank_creatives, compute_ab_winner,
-                prediction_error_stats, compute_client_risk)
+                prediction_error_stats, compute_client_risk,
+                train_ctr_model, predict_ctr_rf, get_trained_ctr_model)
 from integrations import REGISTRY as INTEGRATION_REGISTRY, get_integration
 
 # ---------- Setup ----------
@@ -832,8 +833,14 @@ async def seed_all():
 async def on_start():
     await db.users.create_index("email", unique=True)
     await db.clients.create_index("id", unique=True)
+    try:
+        init_storage()
+        logger.info("Emergent Object Storage initialized")
+    except Exception as e:
+        logger.warning(f"Object storage init failed: {e} (uploads will error until fixed)")
     await seed_all()
     await seed_phase2()
+    await seed_phase3()
     # Write test creds
     try:
         mem = Path("/app/memory")
@@ -1426,6 +1433,480 @@ async def seed_phase2():
             "created_at": now_iso()
         })
     logger.info("Phase 2 seed complete.")
+
+
+# ============================================================
+# PHASE 3 — INDIA/GST INVOICES, UPLOADS, MESSAGING, SEARCH, DAILY BRIEF, RF MODEL
+# ============================================================
+import requests
+from fastapi import UploadFile, File, Form
+from fastapi.responses import FileResponse, Response
+
+# ---------- Emergent Object Storage ----------
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+APP_NAME = "vitronx"
+_storage_key = None
+
+def init_storage(force: bool = False):
+    global _storage_key
+    if _storage_key and not force:
+        return _storage_key
+    resp = requests.post(f"{STORAGE_URL}/init",
+                          json={"emergent_key": os.environ.get("EMERGENT_LLM_KEY")}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    resp = requests.put(f"{STORAGE_URL}/objects/{path}",
+                         headers={"X-Storage-Key": key, "Content-Type": content_type},
+                         data=data, timeout=120)
+    if resp.status_code == 404:
+        # Key may be stale — re-init once
+        key = init_storage(force=True)
+        resp = requests.put(f"{STORAGE_URL}/objects/{path}",
+                             headers={"X-Storage-Key": key, "Content-Type": content_type},
+                             data=data, timeout=120)
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}",
+                         headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code == 404:
+        key = init_storage(force=True)
+        resp = requests.get(f"{STORAGE_URL}/objects/{path}",
+                             headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+ALLOWED_MIME = {"image/png","image/jpeg","image/gif","image/webp","image/svg+xml",
+                "video/mp4","video/quicktime","video/webm",
+                "application/pdf","application/msword","text/plain"}
+
+# ---------- Payment / Invoice-GST models ----------
+class PaymentIn(BaseModel):
+    invoice_id: str
+    amount: float
+    payment_date: Optional[str] = None
+    mode: str = "UPI"  # UPI, NEFT, RTGS, IMPS, Bank Transfer, Cheque, Cash, Other
+    reference: Optional[str] = ""
+    notes: Optional[str] = ""
+
+class GSTInvoiceIn(BaseModel):
+    client_id: str
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    line_items: List[Dict[str, Any]]  # [{description, hsn_sac, quantity, unit_price, discount}]
+    gst_rate: float = 18
+    agency_state: str = "Maharashtra"
+    client_state: Optional[str] = "Maharashtra"
+    client_gstin: Optional[str] = ""
+    notes: Optional[str] = ""
+    payment_terms: Optional[str] = "Net 15 days"
+
+class MessageIn(BaseModel):
+    thread_id: Optional[str] = None
+    entity_type: str  # approval | task | campaign | content | general
+    entity_id: Optional[str] = None
+    client_id: str
+    body: str
+
+# ---------- INR / Indian financial year helpers ----------
+def indian_fy() -> str:
+    """Return current Indian financial year like '2026-27'."""
+    now = datetime.now(timezone.utc)
+    if now.month >= 4:
+        return f"{now.year}-{str(now.year+1)[2:]}"
+    return f"{now.year-1}-{str(now.year)[2:]}"
+
+async def next_gst_invoice_number() -> str:
+    fy = indian_fy()
+    prefix = f"VTX/{fy}/"
+    latest = await db.invoices.find({"number": {"$regex": f"^{prefix.replace('/', chr(92)+'/')}"}}).sort("created_at", -1).to_list(1)
+    seq = 1
+    if latest:
+        try: seq = int(latest[0]["number"].split("/")[-1]) + 1
+        except Exception: pass
+    return f"{prefix}{seq:04d}"
+
+# ---------- GST-aware Invoice endpoint (extends existing) ----------
+@api.post("/invoices/gst")
+async def create_gst_invoice(body: GSTInvoiceIn, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    """Create India GST-compliant invoice. Auto-splits CGST/SGST vs IGST based on states."""
+    subtotal = 0
+    for li in body.line_items:
+        qty = float(li.get("quantity", 1))
+        price = float(li.get("unit_price", 0))
+        disc = float(li.get("discount", 0))
+        li["taxable_value"] = round(qty * price - disc, 2)
+        subtotal += li["taxable_value"]
+    subtotal = round(subtotal, 2)
+    intra_state = (body.client_state or "").strip().lower() == body.agency_state.strip().lower()
+    gst = round(subtotal * body.gst_rate / 100, 2)
+    if intra_state:
+        cgst = round(gst / 2, 2); sgst = round(gst / 2, 2); igst = 0.0
+    else:
+        cgst = 0.0; sgst = 0.0; igst = gst
+    grand_total = round(subtotal + cgst + sgst + igst, 2)
+    doc = {
+        "id": new_id(),
+        "number": await next_gst_invoice_number(),
+        "client_id": body.client_id,
+        "invoice_date": body.invoice_date or datetime.now(timezone.utc).date().isoformat(),
+        "due_date": body.due_date or (datetime.now(timezone.utc) + timedelta(days=15)).date().isoformat(),
+        "line_items": body.line_items,
+        "gst_rate": body.gst_rate,
+        "agency_state": body.agency_state, "client_state": body.client_state,
+        "client_gstin": body.client_gstin,
+        "intra_state": intra_state,
+        "subtotal": subtotal, "cgst": cgst, "sgst": sgst, "igst": igst,
+        "total_tax": round(cgst + sgst + igst, 2), "grand_total": grand_total,
+        "amount": subtotal, "tax": round(cgst + sgst + igst, 2), "total": grand_total,
+        "status": "Draft", "paid_amount": 0, "remaining": grand_total,
+        "currency": "INR",
+        "notes": body.notes, "payment_terms": body.payment_terms,
+        "created_at": now_iso(), "created_by": user["id"],
+    }
+    await db.invoices.insert_one(doc); strip_id(doc)
+    await db.activity.insert_one({"id": new_id(), "client_id": body.client_id, "user_id": user["id"],
+        "user_name": user["name"], "action": f"issued GST invoice {doc['number']} · ₹{grand_total:,.2f}",
+        "created_at": now_iso()})
+    return doc
+
+@api.post("/invoices/{iid}/status")
+async def update_invoice_status(iid: str, new_status: str, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    valid = ["Draft","Issued","Sent","Viewed","Partially_Paid","Paid","Overdue","Cancelled"]
+    if new_status not in valid: raise HTTPException(400, f"Status must be one of {valid}")
+    await db.invoices.update_one({"id": iid}, {"$set": {"status": new_status, "updated_at": now_iso()}})
+    return await db.invoices.find_one({"id": iid}, {"_id": 0})
+
+@api.post("/payments")
+async def record_payment(body: PaymentIn, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    inv = await db.invoices.find_one({"id": body.invoice_id})
+    if not inv: raise HTTPException(404, "Invoice not found")
+    total = inv.get("grand_total") or inv.get("total") or 0
+    paid_prev = inv.get("paid_amount", 0)
+    new_paid = round(paid_prev + body.amount, 2)
+    remaining = round(max(total - new_paid, 0), 2)
+    new_status = "Paid" if remaining == 0 else ("Partially_Paid" if new_paid > 0 else inv.get("status"))
+    await db.invoices.update_one({"id": body.invoice_id},
+        {"$set": {"paid_amount": new_paid, "remaining": remaining, "status": new_status}})
+    payment = {"id": new_id(), "invoice_id": body.invoice_id, "amount": body.amount,
+               "payment_date": body.payment_date or datetime.now(timezone.utc).date().isoformat(),
+               "mode": body.mode, "reference": body.reference, "notes": body.notes,
+               "created_at": now_iso(), "created_by": user["id"], "client_id": inv.get("client_id")}
+    await db.payments.insert_one(payment); strip_id(payment)
+    await db.activity.insert_one({"id": new_id(), "client_id": inv.get("client_id"),
+        "user_id": user["id"], "user_name": user["name"],
+        "action": f"recorded ₹{body.amount:,.2f} payment ({body.mode}) on {inv.get('number')}",
+        "created_at": now_iso()})
+    return {"payment": payment, "invoice_status": new_status, "remaining": remaining}
+
+@api.get("/payments")
+async def list_payments(invoice_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if invoice_id: q["invoice_id"] = invoice_id
+    if user["role"] == "client":
+        # Payment visibility scoped to their client
+        q["client_id"] = user.get("client_id")
+    return await list_col(db.payments, q)
+
+# ---------- File uploads ----------
+@api.post("/uploads")
+async def upload_file(client_id: str = Form(...), entity_type: str = Form("creative"),
+                     entity_id: Optional[str] = Form(None), file: UploadFile = File(...),
+                     user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    ct = (file.content_type or "").lower()
+    if ct and ct not in ALLOWED_MIME:
+        raise HTTPException(400, f"MIME type not allowed: {ct}")
+    fid = new_id()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
+    storage_path = f"{APP_NAME}/uploads/{client_id}/{fid}.{ext}"
+    data = await file.read()
+    try:
+        result = put_object(storage_path, data, ct or "application/octet-stream")
+    except Exception as e:
+        logger.error(f"Object storage upload failed: {e}")
+        raise HTTPException(502, "Storage upload failed")
+    doc = {"id": fid, "filename": file.filename,
+           "storage_path": result["path"], "content_type": ct,
+           "size": result.get("size", len(data)), "client_id": client_id,
+           "entity_type": entity_type, "entity_id": entity_id,
+           "uploader_id": user["id"], "uploader_name": user["name"],
+           "url": f"/api/files/{fid}", "is_deleted": False,
+           "created_at": now_iso()}
+    await db.assets.insert_one(doc); strip_id(doc)
+    if entity_type == "creative" and entity_id:
+        await db.creatives.update_one({"id": entity_id},
+            {"$set": {"thumbnail_url": doc["url"], "asset_id": fid, "asset_content_type": ct}})
+    return doc
+
+@api.get("/files/{fid}")
+async def get_file(fid: str):
+    asset = await db.assets.find_one({"id": fid, "is_deleted": {"$ne": True}})
+    if not asset: raise HTTPException(404, "File not found")
+    try:
+        data, ctype = get_object(asset["storage_path"])
+    except Exception as e:
+        logger.error(f"Object storage fetch failed: {e}")
+        raise HTTPException(502, "Storage fetch failed")
+    return Response(content=data, media_type=asset.get("content_type") or ctype)
+
+@api.get("/assets")
+async def list_assets(client_id: Optional[str] = None, entity_type: Optional[str] = None,
+                       entity_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {"is_deleted": {"$ne": True}}
+    if client_id: q["client_id"] = client_id
+    if entity_type: q["entity_type"] = entity_type
+    if entity_id: q["entity_id"] = entity_id
+    if user["role"] == "client": q["client_id"] = user.get("client_id")
+    return await list_col(db.assets, q)
+
+@api.delete("/assets/{aid}")
+async def delete_asset(aid: str, user: dict = Depends(get_current_user)):
+    # Soft-delete only — Emergent Object Storage has no delete API
+    result = await db.assets.update_one({"id": aid}, {"$set": {"is_deleted": True, "deleted_at": now_iso()}})
+    if result.matched_count == 0: raise HTTPException(404, "Asset not found")
+    return {"ok": True}
+
+# ---------- Messaging (threaded on entities) ----------
+@api.get("/messages")
+async def list_messages(client_id: str, entity_type: Optional[str] = None,
+                          entity_id: Optional[str] = None, thread_id: Optional[str] = None,
+                          user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    q = {"client_id": client_id}
+    if thread_id: q["thread_id"] = thread_id
+    if entity_type: q["entity_type"] = entity_type
+    if entity_id: q["entity_id"] = entity_id
+    return await db.messages.find(q, {"_id": 0}).sort("created_at", 1).to_list(500)
+
+@api.post("/messages")
+async def post_message(body: MessageIn, user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != body.client_id:
+        raise HTTPException(403, "Forbidden")
+    thread_id = body.thread_id or f"{body.entity_type}:{body.entity_id or 'general'}:{body.client_id}"
+    doc = {"id": new_id(), "thread_id": thread_id, "entity_type": body.entity_type,
+           "entity_id": body.entity_id, "client_id": body.client_id,
+           "sender_id": user["id"], "sender_name": user["name"],
+           "sender_role": user["role"], "body": body.body,
+           "read_by": [user["id"]], "created_at": now_iso()}
+    await db.messages.insert_one(doc); strip_id(doc)
+    # Notification for the other side
+    notif_target_role = "client" if user["role"] != "client" else "agency"
+    await db.notifications.insert_one({
+        "id": new_id(), "kind": f"msg-{doc['id']}", "user_id": None,
+        "client_id": body.client_id, "severity": "info",
+        "title": f"New message from {user['name']}",
+        "message": body.body[:120], "link": f"/workspace/{body.client_id}",
+        "read": False, "created_at": now_iso()
+    })
+    return doc
+
+# ---------- Global search ----------
+@api.get("/search")
+async def global_search(q: str, user: dict = Depends(get_current_user)):
+    if not q or len(q) < 2: return {"query": q, "results": {}}
+    rx = {"$regex": q, "$options": "i"}
+    scope_client = None
+    if user["role"] == "client": scope_client = user.get("client_id")
+
+    async def find_in(col, fields, extra=None):
+        or_q = [{f: rx} for f in fields]
+        mq = {"$or": or_q}
+        if scope_client and col not in ("users",):
+            mq["client_id"] = scope_client
+        if extra: mq.update(extra)
+        return await db[col].find(mq, {"_id": 0}).limit(6).to_list(6)
+
+    results = {
+        "clients": [] if scope_client else await find_in("clients", ["name","industry","primary_contact"]),
+        "campaigns": await find_in("campaigns", ["name","platform","objective"]),
+        "projects": await find_in("projects", ["name","description"]),
+        "tasks": await find_in("tasks", ["name","description"]),
+        "content": await find_in("content", ["title","caption"]),
+        "creatives": await find_in("creatives", ["name","caption","cta"]),
+        "leads": await find_in("leads", ["name","company","email"]),
+        "invoices": await find_in("invoices", ["number"]),
+    }
+    total = sum(len(v) for v in results.values())
+    return {"query": q, "total": total, "results": results}
+
+# ---------- Client profitability ----------
+@api.get("/finance/profitability/{client_id}")
+async def client_profitability(client_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not c: raise HTTPException(404, "Client not found")
+    campaigns = await db.campaigns.find({"client_id": client_id}, {"_id": 0}).to_list(500)
+    invoices = await db.invoices.find({"client_id": client_id}, {"_id": 0}).to_list(200)
+    retainer = c.get("monthly_retainer", 0)
+    # Revenue = retainer + management fee (~15% of ad spend)
+    campaign_mgmt_fee = round(sum(cp.get("spend", 0) for cp in campaigns) * 0.15, 2)
+    invoiced = round(sum(i.get("grand_total", i.get("total", i.get("amount", 0))) for i in invoices), 2)
+    revenue = round(retainer + campaign_mgmt_fee, 2)
+    # Estimated cost = internal team hours (30% of revenue) + creative production (10%)
+    team_cost = round(revenue * 0.30, 2)
+    creative_cost = round(revenue * 0.10, 2)
+    vendor_cost = round(sum(cp.get("spend", 0) for cp in campaigns) * 0.02, 2)  # 2% platform vendor fees
+    total_cost = round(team_cost + creative_cost + vendor_cost, 2)
+    gross_profit = round(revenue - total_cost, 2)
+    margin = round(gross_profit / revenue * 100, 1) if revenue else 0
+    return {
+        "revenue": {"retainer": retainer, "campaign_mgmt_fee": campaign_mgmt_fee,
+                    "total": revenue, "invoiced": invoiced},
+        "cost": {"team": team_cost, "creative": creative_cost, "vendor": vendor_cost, "total": total_cost},
+        "gross_profit": gross_profit, "gross_margin_pct": margin,
+        "note": "Estimated using standard agency cost heuristics (team 30% · creative 10% · vendor 2%)"
+    }
+
+@api.get("/finance/profitability")
+async def all_profitability(user: dict = Depends(require_role("agency_admin","account_manager"))):
+    clients = await db.clients.find({}, {"_id": 0}).to_list(500)
+    out = []
+    for c in clients:
+        p = await client_profitability(c["id"], user)
+        out.append({"id": c["id"], "name": c["name"], "logo_color": c.get("logo_color"),
+                    "industry": c["industry"], **p})
+    out.sort(key=lambda x: -x["gross_profit"])
+    return out
+
+# ---------- Random Forest CTR Model API ----------
+@api.post("/ml/ctr-model/train")
+async def train_ctr(user: dict = Depends(require_role("agency_admin","account_manager"))):
+    """Train RF CTR model on all creatives with actual performance."""
+    records = await db.creatives.find({"actual_impressions": {"$gt": 0},
+                                        "actual_ctr": {"$exists": True}}, {"_id": 0}).to_list(2000)
+    result = train_ctr_model(records)
+    if result.get("status") == "trained":
+        await db.ml_models.insert_one({"id": new_id(), "kind": "ctr_rf",
+            **result, "created_at": now_iso(), "trained_by": user["id"]})
+    return result
+
+@api.get("/ml/ctr-model")
+async def ctr_model_status(user: dict = Depends(get_current_user)):
+    return get_trained_ctr_model()
+
+@api.get("/ml/ctr-model/predict/{creative_id}")
+async def predict_creative_ctr(creative_id: str, user: dict = Depends(get_current_user)):
+    c = await db.creatives.find_one({"id": creative_id}, {"_id": 0})
+    if not c: raise HTTPException(404, "Creative not found")
+    result = predict_ctr_rf(c)
+    if not result: return {"status": "model_not_trained", "hint": "POST /api/ml/ctr-model/train first"}
+    return {**result, "creative_name": c.get("name")}
+
+# ---------- Daily AI Brief ----------
+@api.get("/analytics/daily-brief")
+async def daily_brief(user: dict = Depends(get_current_user)):
+    """Structured facts + optional LLM narrative. Backend calculates, LLM only explains."""
+    attention = await needs_attention(user)
+    unread = await db.notifications.count_documents({"read": False})
+    top_creatives = await db.creatives.find(
+        {"actual_ctr": {"$gt": 0}}, {"_id": 0}
+    ).sort("actual_ctr", -1).to_list(3)
+    bad_campaigns = await db.campaigns.find({"status": "Active", "spend": {"$gt": 5000}}, {"_id": 0}).to_list(200)
+    bad_campaigns = [c for c in bad_campaigns if (c.get("revenue",0) / max(c.get("spend",1),1)) < 1.5][:3]
+
+    facts = {
+        "top_priorities": attention[:5],
+        "unread_alerts": unread,
+        "top_creatives": [{"name": c["name"], "ctr": c.get("actual_ctr"), "client_id": c["client_id"]} for c in top_creatives],
+        "underperforming_campaigns": [{"name": c["name"], "roas": round(c.get("revenue",0)/max(c.get("spend",1),1),2),
+                                       "spend": c.get("spend"), "client_id": c["client_id"]} for c in bad_campaigns],
+        "generated_at": now_iso(),
+    }
+    # Optional LLM narrative (explains only — never calculates)
+    narrative = None
+    try:
+        top_names = "; ".join([c['name'] + ' @ ' + str(c.get('actual_ctr')) + '%' for c in top_creatives]) or "none"
+        top_priorities = "; ".join([a['title'] for a in attention[:3]]) or "none"
+        summary_input = (f"Priorities: {len(attention)} items. Top: {top_priorities}. "
+                         f"Top creatives (by actual CTR): {top_names}. "
+                         f"Underperforming: {len(bad_campaigns)} campaigns.")
+        sys_msg = "You are the VITRONX daily strategist for an Indian digital marketing agency. Write a crisp 3-bullet briefing summarizing what needs attention today. Use INR (₹). Do not invent metrics — only rephrase the facts given."
+        narrative = await asyncio.wait_for(gen_ai_text(summary_input, sys_msg), timeout=15)
+    except Exception:
+        narrative = None
+    return {"facts": facts, "narrative": narrative or "Focus on the top-priority items above and rotate creative on the underperforming campaigns."}
+
+# ---------- Phase 3 seed: Indian campaigns + upgraded invoices + trained model ----------
+async def seed_phase3():
+    # Update existing invoices with GST fields if missing
+    to_upgrade = await db.invoices.find({"currency": {"$exists": False}}, {"_id": 0}).to_list(200)
+    for inv in to_upgrade:
+        amount = inv.get("amount", 0)
+        # Assume 18% GST intra-state Maharashtra
+        gst = round(amount * 0.18, 2)
+        cgst = round(gst / 2, 2); sgst = round(gst / 2, 2)
+        grand = round(amount + gst, 2)
+        # Regenerate number in FY format
+        n = await db.invoices.count_documents({"number": {"$regex": "^VTX/"}})
+        fy = indian_fy()
+        new_num = f"VTX/{fy}/{n+1:04d}"
+        await db.invoices.update_one({"id": inv["id"]}, {"$set": {
+            "number": new_num, "currency": "INR",
+            "subtotal": amount, "cgst": cgst, "sgst": sgst, "igst": 0.0,
+            "total_tax": gst, "grand_total": grand, "gst_rate": 18,
+            "agency_state": "Maharashtra", "client_state": "Maharashtra",
+            "intra_state": True, "paid_amount": grand if inv.get("status") == "Paid" else 0,
+            "remaining": 0 if inv.get("status") == "Paid" else grand,
+            "payment_terms": "Net 15 days",
+        }})
+
+    # Seed Indian campaigns if not present
+    if await db.campaigns.count_documents({"name": {"$regex": "Diwali|Holi|Independence"}}) == 0:
+        indian_campaigns = [
+            ("Diwali Festive Push", "Conversions", "Meta Ads"),
+            ("Holi Colors Campaign", "Awareness", "Instagram"),
+            ("Independence Day Sale", "Sales", "Google Ads"),
+            ("Raksha Bandhan Gifting", "Conversions", "Meta Ads"),
+            ("New Year Launch", "Awareness", "YouTube"),
+        ]
+        clients_list = await db.clients.find({}, {"_id": 0}).to_list(20)
+        for i, c in enumerate(clients_list):
+            if i >= len(indian_campaigns): break
+            name, obj, plat = indian_campaigns[i]
+            spend = random.randint(80000, 350000)  # in INR (₹80k–₹3.5L)
+            imp = random.randint(200000, 1500000)
+            clk = int(imp * random.uniform(0.018, 0.048))
+            conv = int(clk * random.uniform(0.03, 0.11))
+            rev = int(spend * random.uniform(1.8, 5.5))
+            await db.campaigns.insert_one({
+                "id": new_id(), "client_id": c["id"],
+                "name": f"{name} — {c['name']}",
+                "platform": plat, "objective": obj, "status": "Active",
+                "budget": spend + random.randint(20000, 80000),
+                "spend": spend, "impressions": imp, "clicks": clk,
+                "conversions": conv, "revenue": rev,
+                "target_cities": random.sample(["Mumbai","Delhi","Bengaluru","Hyderabad","Chennai","Pune","Kolkata","Ahmedabad"], 4),
+                "start_date": (datetime.now(timezone.utc) - timedelta(days=random.randint(5,25))).isoformat(),
+                "end_date": (datetime.now(timezone.utc) + timedelta(days=random.randint(5,25))).isoformat(),
+                "created_at": now_iso()
+            })
+
+    # Update client retainers to INR-appropriate ranges (if still in $ scale <5000)
+    async for c in db.clients.find({"monthly_retainer": {"$lt": 10000}}):
+        # Scale up to Indian retainer range
+        new_r = c["monthly_retainer"] * 85  # roughly $→₹ + agency premium
+        await db.clients.update_one({"id": c["id"]}, {"$set": {"monthly_retainer": new_r}})
+
+    # Train CTR model on seed data
+    records = await db.creatives.find({"actual_impressions": {"$gt": 0},
+                                        "actual_ctr": {"$exists": True}}, {"_id": 0}).to_list(2000)
+    result = train_ctr_model(records)
+    if result.get("status") == "trained":
+        await db.ml_models.delete_many({"kind": "ctr_rf"})
+        await db.ml_models.insert_one({"id": new_id(), "kind": "ctr_rf", **result,
+                                        "created_at": now_iso(), "trained_by": "system"})
+    logger.info(f"Phase 3 seed complete. CTR model: {result.get('status')}")
 
 
 app.include_router(api)

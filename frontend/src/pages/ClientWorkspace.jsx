@@ -7,6 +7,8 @@ import { useApp } from "../context/AppContext";
 import { toast } from "sonner";
 import { Sparkles, Plus, Wand2, CheckCircle2, XCircle, Zap } from "lucide-react";
 import { CreativeIntelTab, RiskTab, BudgetTab } from "./CreativeIntel";
+import { CtrModelPanel, ProfitabilityCard, MessagesPanel, UploadButton } from "./Phase3Kit";
+import { fmtINR } from "../lib/fmt";
 
 const COLORS = ["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6","#3B82F6"];
 
@@ -46,7 +48,7 @@ export default function ClientWorkspace() {
           </div>
           <div className="flex items-center gap-6 flex-wrap">
             <div className="text-right"><div className="text-[10px] uppercase text-slate-500">Health</div><div className="font-mono text-2xl font-bold text-amber-400">{client.health_score}</div></div>
-            <div className="text-right"><div className="text-[10px] uppercase text-slate-500">Retainer</div><div className="font-mono text-2xl font-bold">${client.monthly_retainer?.toLocaleString()}</div></div>
+            <div className="text-right"><div className="text-[10px] uppercase text-slate-500">Retainer</div><div className="font-mono text-2xl font-bold">{fmtINR(client.monthly_retainer)}</div></div>
             <StatusBadge status={client.status}/>
           </div>
         </div>
@@ -62,7 +64,7 @@ export default function ClientWorkspace() {
       </div>
 
       <div className="animate-fade-in-up">
-        {tab === "Overview" && <OverviewTab dash={dash}/>}
+        {tab === "Overview" && <OverviewTab dash={dash ? {...dash, _cid: cid} : null} client={client}/>}
         {tab === "Campaigns" && <CrudTab cid={cid} kind="campaigns" fields={["name","platform","objective","status","budget","spend","revenue","conversions"]} required={["name"]}/>}
         {tab === "Creative Intel" && <CreativeIntelTab cid={cid}/>}
         {tab === "Content" && <ContentTab cid={cid}/>}
@@ -72,7 +74,7 @@ export default function ClientWorkspace() {
         {tab === "Leads" && <LeadsTab cid={cid}/>}
         {tab === "Approvals" && <ApprovalsTab cid={cid}/>}
         {tab === "SEO" && <SeoTab cid={cid}/>}
-        {tab === "Analytics" && <OverviewTab dash={dash}/>}
+        {tab === "Analytics" && <OverviewTab dash={dash ? {...dash, _cid: cid} : null} client={client}/>}
         {tab === "AI Insights" && <AITab cid={cid}/>}
         {tab === "ML Lab" && <MLTab cid={cid}/>}
         {tab === "Risk" && <RiskTab cid={cid}/>}
@@ -85,7 +87,7 @@ export default function ClientWorkspace() {
   );
 }
 
-function OverviewTab({dash}){
+function OverviewTab({dash, client}){
   if (!dash) return <div className="text-slate-400">Loading…</div>;
   const k = dash.kpis;
   return (
@@ -97,8 +99,8 @@ function OverviewTab({dash}){
         <KpiCard testId="ov-visitors" label="Website Visits" value={k.website_visitors.toLocaleString()}/>
         <KpiCard testId="ov-leads" label="Leads" value={k.leads}/>
         <KpiCard testId="ov-conv" label="Conversions" value={k.conversions}/>
-        <KpiCard testId="ov-spend" label="Ad Spend" prefix="$" value={k.spend.toLocaleString()}/>
-        <KpiCard testId="ov-revenue" label="Ad Revenue" prefix="$" value={k.revenue.toLocaleString()}/>
+        <KpiCard testId="ov-spend" label="Ad Spend" value={fmtINR(k.spend)}/>
+        <KpiCard testId="ov-revenue" label="Ad Revenue" value={fmtINR(k.revenue)}/>
         <KpiCard testId="ov-roas" label="ROAS" value={k.roas} suffix="x"/>
         <KpiCard testId="ov-cpa" label="CPA" prefix="$" value={k.cpa}/>
         <KpiCard testId="ov-ctr" label="CTR" value={k.ctr} suffix="%"/>
@@ -143,6 +145,10 @@ function OverviewTab({dash}){
             <Bar dataKey="count" fill="#FF9F1C" radius={[6,6,0,0]}/>
           </BarChart>
         </ResponsiveContainer>
+      </div>
+      <div className="grid lg:grid-cols-2 gap-6">
+        <ProfitabilityCard clientId={dash._cid || client?.id || ""}/>
+        <MessagesPanel clientId={dash._cid || client?.id || ""} title="Client Conversation"/>
       </div>
     </div>
   );
@@ -699,6 +705,8 @@ function MLTab({cid}){
           </div>
         </div>
       )}
+
+      <CtrModelPanel/>
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { StatusBadge, SectionHeader, EmptyState } from "../components/atoms";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Bell, AlertTriangle, Zap, Plug, Check } from "lucide-react";
+import { MessagesPanel } from "./Phase3Kit";
+import { fmtINR, fmtDateIN } from "../lib/fmt";
 
 export function NotificationsPage() {
   const [data, setData] = useState({notifications: [], unread: 0});
@@ -162,12 +164,13 @@ export function ClientPortalHome() {
          <div className="space-y-2">
           {invoices.slice(0,5).map(i => (
             <div key={i.id} className="flex justify-between p-3 bg-[var(--vx-card-hover)] rounded-lg">
-              <div><div className="font-mono font-medium">{i.number}</div><div className="text-xs text-slate-500">Due {i.due_date?new Date(i.due_date).toLocaleDateString():"—"}</div></div>
-              <div className="text-right"><div className="font-mono font-bold">${i.total?.toLocaleString()}</div><StatusBadge status={i.status}/></div>
+              <div><div className="font-mono font-medium">{i.number}</div><div className="text-xs text-slate-500">Due {fmtDateIN(i.due_date)}</div></div>
+              <div className="text-right"><div className="font-mono font-bold">{fmtINR(i.grand_total || i.total)}</div><StatusBadge status={i.status}/></div>
             </div>
           ))}
          </div>}
       </div>
+      {user?.client_id && <MessagesPanel clientId={user.client_id} entityType="general" title="Message your agency"/>}
     </div>
   );
 }

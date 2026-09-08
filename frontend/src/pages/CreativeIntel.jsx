@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { api } from "../lib/api";
 import { KpiCard, StatusBadge, SectionHeader, EmptyState } from "../components/atoms";
 import { toast } from "sonner";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { Sparkles, Trophy, Zap, Plus, X, AlertTriangle, ArrowRight } from "lucide-react";
+import { fmtINR, fmtDateIN } from "../lib/fmt";
+import { UploadButton, GSTInvoiceForm } from "./Phase3Kit";
 
 export function CreativeIntelTab({cid}) {
   const [ranked, setRanked] = useState([]);
@@ -89,6 +91,12 @@ export function CreativeIntelTab({cid}) {
                  data-testid={`creative-rank-${i}`}>
               <div className="flex items-start gap-4">
                 <div className="text-3xl font-mono font-extrabold text-slate-600">#{i+1}</div>
+                {r.thumbnail_url ? (
+                  <img src={process.env.REACT_APP_BACKEND_URL + r.thumbnail_url} alt={r.name}
+                       className="w-20 h-20 rounded-lg object-cover border border-[var(--vx-border)]" data-testid={`thumb-${r.id}`}/>
+                ) : (
+                  <div className="w-20 h-20 rounded-lg bg-[var(--vx-card-hover)] border border-dashed border-[var(--vx-border)] flex items-center justify-center text-[10px] text-slate-500 text-center px-1">No preview</div>
+                )}
                 <div className="flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     {r.winner && <span className="vx-status-badge vx-badge-success flex items-center gap-1"><Trophy size={10}/>RECOMMENDED</span>}
@@ -106,7 +114,12 @@ export function CreativeIntelTab({cid}) {
                     <div className="mt-2 text-[11px] text-slate-500 font-mono">Actual CTR: <span className="text-cyan-400">{r.actual_ctr}%</span> · Err: {(r.actual_ctr - r.predicted_ctr).toFixed(2)}pp</div>
                   )}
                 </div>
-                <button data-testid={`record-actual-${r.id}`} onClick={(e)=>{e.stopPropagation(); setShowAB(r); setAbForm({impressions: r.actual_impressions||0, clicks: r.actual_clicks||0, conversions: r.actual_conversions||0, spend: r.actual_spend||0, revenue: r.actual_revenue||0, engagement: r.actual_engagement||0});}} className="vx-btn-ghost text-[10px] py-1">Record actual</button>
+                <div className="flex flex-col gap-1" onClick={e=>e.stopPropagation()}>
+                  <UploadButton clientId={cid} entityType="creative" entityId={r.id}
+                    accept="image/*,video/*"
+                    onUploaded={()=>load()} label="Upload"/>
+                  <button data-testid={`record-actual-${r.id}`} onClick={()=>{ setShowAB(r); setAbForm({impressions: r.actual_impressions||0, clicks: r.actual_clicks||0, conversions: r.actual_conversions||0, spend: r.actual_spend||0, revenue: r.actual_revenue||0, engagement: r.actual_engagement||0});}} className="vx-btn-ghost text-[10px] py-1">Record actual</button>
+                </div>
               </div>
             </div>
           ))}
@@ -319,10 +332,12 @@ function MiniStat({label, value, suffix=""}) {
 export function BudgetTab({cid}) {
   const [budgets, setBudgets] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [payments, setPayments] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({category:"advertising", allocated:0, period:"monthly", notes:""});
-  const [showInv, setShowInv] = useState(false);
-  const [invForm, setInvForm] = useState({amount:0, tax:0, due_date:""});
+  const [showGst, setShowGst] = useState(false);
+  const [showPay, setShowPay] = useState(null);
+  const [payForm, setPayForm] = useState({amount:0, mode:"UPI", reference:""});
 
   const load = async () => {
     const [b, i] = await Promise.all([api.get(`/budgets?client_id=${cid}`), api.get(`/invoices?client_id=${cid}`)]);
@@ -335,10 +350,11 @@ export function BudgetTab({cid}) {
     await api.post("/budgets", {...form, client_id: cid, allocated: Number(form.allocated)});
     toast.success("Budget created"); setShowForm(false); load();
   };
-  const createInv = async (e) => {
+
+  const submitPay = async (e) => {
     e.preventDefault();
-    await api.post("/invoices", {...invForm, client_id: cid, amount: Number(invForm.amount), tax: Number(invForm.tax)});
-    toast.success("Invoice created"); setShowInv(false); load();
+    await api.post("/payments", {...payForm, invoice_id: showPay.id, amount: Number(payForm.amount)});
+    toast.success("Payment recorded"); setShowPay(null); setPayForm({amount:0, mode:"UPI", reference:""}); load();
   };
 
   const statusColor = s => ({healthy:"#10B981",warning:"#F59E0B",critical:"#F43F5E",overspend:"#EF4444"}[s]||"#94A3B8");
@@ -347,12 +363,12 @@ export function BudgetTab({cid}) {
     <div className="space-y-6" data-testid="budget-tab">
       <div className="flex justify-between items-center flex-wrap gap-2">
         <div>
-          <h3 className="font-display text-2xl font-bold">Budget & Invoicing</h3>
-          <p className="text-xs text-slate-500 mt-1">Retainer usage · Ad spend pacing · Invoice tracking · Data from campaign records</p>
+          <h3 className="font-display text-2xl font-bold">Finance · Budgets, GST Invoices & Payments</h3>
+          <p className="text-xs text-slate-500 mt-1">INR (₹) · Indian FY numbering · CGST/SGST auto-split for intra-state · IGST for inter-state</p>
         </div>
         <div className="flex gap-2">
           <button data-testid="new-budget-btn" onClick={()=>setShowForm(true)} className="vx-btn-ghost"><Plus size={12} className="inline mr-1"/>Budget</button>
-          <button data-testid="new-invoice-btn" onClick={()=>setShowInv(true)} className="vx-btn-primary"><Plus size={12} className="inline mr-1"/>Invoice</button>
+          <button data-testid="new-invoice-btn" onClick={()=>setShowGst(true)} className="vx-btn-primary"><Plus size={12} className="inline mr-1"/>GST Invoice</button>
         </div>
       </div>
 
@@ -363,19 +379,19 @@ export function BudgetTab({cid}) {
             <div className="flex justify-between items-start">
               <div>
                 <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{b.period} · {b.category}</div>
-                <div className="font-mono text-2xl font-bold mt-1">${b.allocated.toLocaleString()}</div>
+                <div className="font-mono text-2xl font-bold mt-1">{fmtINR(b.allocated)}</div>
               </div>
               <span className="vx-status-badge" style={{background: statusColor(b.status)+"22", color: statusColor(b.status), border: `1px solid ${statusColor(b.status)}55`}}>{b.status}</span>
             </div>
             <div className="mt-3">
-              <div className="flex justify-between text-xs text-slate-500 mb-1"><span>{b.utilization_pct}% used</span><span>${b.spent.toLocaleString()} / ${b.allocated.toLocaleString()}</span></div>
+              <div className="flex justify-between text-xs text-slate-500 mb-1"><span>{b.utilization_pct}% used</span><span>{fmtINR(b.spent)} / {fmtINR(b.allocated)}</span></div>
               <div className="h-2 bg-[var(--vx-border)] rounded-full overflow-hidden">
                 <div className="h-full rounded-full transition-all" style={{width:`${Math.min(b.utilization_pct,100)}%`, background: statusColor(b.status)}}/>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-[var(--vx-border)] text-xs">
-              <div><div className="text-slate-500">Spent</div><div className="font-mono">${b.spent.toLocaleString()}</div></div>
-              <div><div className="text-slate-500">Remaining</div><div className="font-mono">${b.remaining.toLocaleString()}</div></div>
+              <div><div className="text-slate-500">Spent</div><div className="font-mono">{fmtINR(b.spent)}</div></div>
+              <div><div className="text-slate-500">Remaining</div><div className="font-mono">{fmtINR(b.remaining)}</div></div>
               <div><div className="text-slate-500">Pacing</div><div className="font-mono">{b.utilization_pct}%</div></div>
             </div>
           </div>
@@ -383,21 +399,25 @@ export function BudgetTab({cid}) {
       </div>
 
       <div className="vx-card overflow-hidden">
-        <div className="p-4 border-b border-[var(--vx-border)]"><h4 className="font-display font-bold">Invoices</h4></div>
+        <div className="p-4 border-b border-[var(--vx-border)]"><h4 className="font-display font-bold">GST Invoices</h4></div>
         {invoices.length === 0 ? <div className="p-8 text-center text-slate-500 text-sm">No invoices yet.</div> :
         <table className="w-full text-sm" data-testid="invoices-table">
           <thead className="bg-[var(--vx-sidebar)]"><tr className="text-left text-xs uppercase text-slate-500">
-            <th className="p-3">Number</th><th>Amount</th><th>Tax</th><th>Total</th><th>Due</th><th>Status</th>
+            <th className="p-3">Number</th><th>Subtotal</th><th>CGST</th><th>SGST</th><th>IGST</th><th>Grand Total</th><th>Paid</th><th>Due</th><th>Status</th><th></th>
           </tr></thead>
           <tbody>
             {invoices.map(i => (
-              <tr key={i.id} className="border-b border-[var(--vx-border)]/60 hover:bg-[var(--vx-card-hover)]">
+              <tr key={i.id} className="border-b border-[var(--vx-border)]/60 hover:bg-[var(--vx-card-hover)]" data-testid={`inv-row-${i.id}`}>
                 <td className="p-3 font-mono font-medium">{i.number}</td>
-                <td className="p-3 font-mono">${i.amount?.toLocaleString()}</td>
-                <td className="p-3 font-mono text-slate-500">${i.tax?.toLocaleString()}</td>
-                <td className="p-3 font-mono font-bold">${i.total?.toLocaleString()}</td>
-                <td className="p-3 text-slate-400">{i.due_date ? new Date(i.due_date).toLocaleDateString() : "—"}</td>
+                <td className="p-3 font-mono">{fmtINR(i.subtotal || i.amount)}</td>
+                <td className="p-3 font-mono text-slate-500">{fmtINR(i.cgst || 0)}</td>
+                <td className="p-3 font-mono text-slate-500">{fmtINR(i.sgst || 0)}</td>
+                <td className="p-3 font-mono text-slate-500">{fmtINR(i.igst || 0)}</td>
+                <td className="p-3 font-mono font-bold text-amber-400">{fmtINR(i.grand_total || i.total)}</td>
+                <td className="p-3 font-mono text-emerald-400">{fmtINR(i.paid_amount || 0)}</td>
+                <td className="p-3 text-slate-400 text-xs">{fmtDateIN(i.due_date)}</td>
                 <td className="p-3"><StatusBadge status={i.status}/></td>
+                <td className="p-3">{i.status !== "Paid" && <button data-testid={`pay-${i.id}`} onClick={()=>{setShowPay(i); setPayForm({amount: i.remaining || i.grand_total || i.total, mode:"UPI", reference:""});}} className="text-xs text-amber-400 hover:underline">Record payment</button>}</td>
               </tr>
             ))}
           </tbody>
@@ -418,23 +438,31 @@ export function BudgetTab({cid}) {
                   {["monthly","campaign","project"].map(o=><option key={o}>{o}</option>)}
                 </select></div>
             </div>
-            <div><label className="text-xs text-slate-400 uppercase">Allocated ($)</label>
+            <div><label className="text-xs text-slate-400 uppercase">Allocated (₹)</label>
               <input data-testid="bf-allocated" type="number" className="vx-input mt-1" value={form.allocated} onChange={e=>setForm({...form,allocated:e.target.value})} required/></div>
             <button type="submit" data-testid="submit-budget-btn" className="vx-btn-primary w-full">Create</button>
           </form>
         </div>
       )}
-      {showInv && (
+
+      {showGst && <GSTInvoiceForm clientId={cid} onCreated={load} onClose={()=>setShowGst(false)}/>}
+
+      {showPay && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <form onSubmit={createInv} className="w-full max-w-md vx-card p-6 space-y-3">
-            <div className="flex justify-between items-center"><h3 className="font-display text-xl font-bold">New Invoice</h3><button type="button" onClick={()=>setShowInv(false)}><X size={16}/></button></div>
-            <div><label className="text-xs text-slate-400 uppercase">Amount ($)</label>
-              <input data-testid="if-amount" type="number" className="vx-input mt-1" value={invForm.amount} onChange={e=>setInvForm({...invForm,amount:e.target.value})} required/></div>
-            <div><label className="text-xs text-slate-400 uppercase">Tax ($)</label>
-              <input data-testid="if-tax" type="number" className="vx-input mt-1" value={invForm.tax} onChange={e=>setInvForm({...invForm,tax:e.target.value})}/></div>
-            <div><label className="text-xs text-slate-400 uppercase">Due date</label>
-              <input data-testid="if-due" type="date" className="vx-input mt-1" value={invForm.due_date} onChange={e=>setInvForm({...invForm,due_date:e.target.value})}/></div>
-            <button type="submit" data-testid="submit-invoice-btn" className="vx-btn-primary w-full">Create Invoice</button>
+          <form onSubmit={submitPay} className="w-full max-w-md vx-card p-6 space-y-3" data-testid="payment-form">
+            <div className="flex justify-between items-center"><h3 className="font-display text-xl font-bold">Record Payment</h3><button type="button" onClick={()=>setShowPay(null)}><X size={16}/></button></div>
+            <div className="text-xs text-slate-500">Invoice {showPay.number} · Grand total {fmtINR(showPay.grand_total || showPay.total)}</div>
+            <div><label className="text-xs text-slate-400 uppercase">Amount (₹)</label>
+              <input data-testid="pay-amount" type="number" className="vx-input mt-1" value={payForm.amount} onChange={e=>setPayForm({...payForm,amount:e.target.value})} required/></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-slate-400 uppercase">Mode</label>
+                <select data-testid="pay-mode" className="vx-input mt-1" value={payForm.mode} onChange={e=>setPayForm({...payForm,mode:e.target.value})}>
+                  {["UPI","NEFT","RTGS","IMPS","Bank Transfer","Cheque","Cash","Other"].map(o=><option key={o}>{o}</option>)}
+                </select></div>
+              <div><label className="text-xs text-slate-400 uppercase">Reference</label>
+                <input data-testid="pay-ref" className="vx-input mt-1 font-mono" value={payForm.reference} onChange={e=>setPayForm({...payForm,reference:e.target.value})} placeholder="UPI/1234"/></div>
+            </div>
+            <button type="submit" data-testid="submit-payment-btn" className="vx-btn-primary w-full">Record</button>
           </form>
         </div>
       )}
