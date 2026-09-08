@@ -29,7 +29,10 @@ export default function ClientsList() {
   return (
     <div className="space-y-6" data-testid="clients-page">
       <SectionHeader title="Clients" subtitle={`${clients.length} client workspaces`}
-        action={<button data-testid="new-client-btn" className="vx-btn-primary" onClick={()=>setShowForm(true)}><Plus size={14} className="inline mr-1"/>New Client</button>}/>
+        action={<div className="flex gap-2">
+          <button data-testid="onboarding-btn" onClick={()=>nav("/onboarding")} className="vx-btn-ghost">Onboarding Wizard</button>
+          <button data-testid="new-client-btn" className="vx-btn-primary" onClick={()=>setShowForm(true)}><Plus size={14} className="inline mr-1"/>New Client</button>
+        </div>}/>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
         {clients.map(c => (

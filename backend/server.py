@@ -22,7 +22,8 @@ from ml import (linear_forecast, zscore_anomalies, ema, score_lead,
                 cluster_clients, campaign_efficiency_index, pearson_correlation,
                 score_creative, rank_creatives, compute_ab_winner,
                 prediction_error_stats, compute_client_risk,
-                train_ctr_model, predict_ctr_rf, get_trained_ctr_model)
+                train_ctr_model, predict_ctr_rf, get_trained_ctr_model,
+                train_lead_conversion, predict_lead_conversion, get_trained_lead_model)
 from integrations import REGISTRY as INTEGRATION_REGISTRY, get_integration
 
 # ---------- Setup ----------
@@ -1803,6 +1804,208 @@ async def predict_creative_ctr(creative_id: str, user: dict = Depends(get_curren
     if not result: return {"status": "model_not_trained", "hint": "POST /api/ml/ctr-model/train first"}
     return {**result, "creative_name": c.get("name")}
 
+# ---------- Lead Conversion Logistic Regression ----------
+@api.post("/ml/lead-conversion/train")
+async def train_lead_model_api(user: dict = Depends(require_role("agency_admin","account_manager"))):
+    records = await db.leads.find({}, {"_id": 0}).to_list(2000)
+    result = train_lead_conversion(records)
+    if result.get("status") == "trained":
+        await db.ml_models.delete_many({"kind": "lead_lr"})
+        await db.ml_models.insert_one({"id": new_id(), "kind": "lead_lr", **result,
+                                        "created_at": now_iso(), "trained_by": user["id"]})
+    return result
+
+@api.get("/ml/lead-conversion")
+async def lead_model_status(user: dict = Depends(get_current_user)):
+    return get_trained_lead_model()
+
+@api.get("/ml/lead-conversion/predict/{lead_id}")
+async def predict_one_lead(lead_id: str, user: dict = Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead: raise HTTPException(404, "Lead not found")
+    if user["role"] == "client" and user.get("client_id") != lead.get("client_id"):
+        raise HTTPException(403, "Forbidden")
+    result = predict_lead_conversion(lead)
+    if not result: return {"status": "model_not_trained", "hint": "POST /api/ml/lead-conversion/train first"}
+    return {**result, "lead_name": lead.get("name")}
+
+@api.get("/ml/lead-conversion/predict-batch/{client_id}")
+async def predict_leads_batch(client_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != client_id:
+        raise HTTPException(403, "Forbidden")
+    leads = await db.leads.find({"client_id": client_id}, {"_id": 0}).to_list(500)
+    out = []
+    for l in leads:
+        p = predict_lead_conversion(l)
+        if p: out.append({**l, **p})
+        else: out.append({**l, "conversion_probability": None, "tier": None})
+    out.sort(key=lambda x: -(x.get("conversion_probability") or 0))
+    return out
+
+# ---------- PDF Reports ----------
+@api.get("/reports/{cid}/pdf")
+async def generate_pdf_report(cid: str, user: dict = Depends(get_current_user)):
+    if user["role"] == "client" and user.get("client_id") != cid:
+        raise HTTPException(403, "Forbidden")
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from io import BytesIO
+
+    c = await db.clients.find_one({"id": cid}, {"_id": 0})
+    if not c: raise HTTPException(404, "Client not found")
+    dash = await client_dashboard(cid, user)
+    risk = await client_risk(cid, user)
+    campaigns = await db.campaigns.find({"client_id": cid}, {"_id": 0}).to_list(200)
+    top_camps = sorted([c for c in campaigns if c.get("spend", 0) > 0],
+                        key=lambda x: -(x.get("revenue", 0) / max(x.get("spend", 1), 1)))[:3]
+    poor_camps = sorted([c for c in campaigns if c.get("spend", 0) > 5000 and (c.get("revenue", 0) / max(c.get("spend", 1), 1)) < 1.5],
+                         key=lambda x: (x.get("revenue", 0) / max(x.get("spend", 1), 1)))[:3]
+
+    def inr(n):
+        s = f"{int(round(n)):,}"
+        # Convert to Indian grouping
+        parts = s.split(",")
+        if len(parts) <= 2: return f"₹{s}"
+        return f"₹{parts[0]},{','.join(parts[1:-1])},{parts[-1]}" if len(parts) >= 3 else f"₹{s}"
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="Heading0", fontSize=22, textColor=colors.HexColor("#FF9F1C"), leading=26, spaceAfter=6, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Sub", fontSize=9, textColor=colors.HexColor("#666666"), spaceAfter=10))
+    styles.add(ParagraphStyle(name="H2", fontSize=13, textColor=colors.HexColor("#111111"), spaceBefore=14, spaceAfter=6, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Body2", fontSize=9.5, textColor=colors.HexColor("#333333"), leading=13))
+    period = f"Last 30 days · {datetime.now(timezone.utc).strftime('%d %b %Y')}"
+    story = []
+    story.append(Paragraph("VITRONX", styles["Heading0"]))
+    story.append(Paragraph(f"Performance Report · {c['name']} · {c['industry']}", styles["Sub"]))
+    story.append(Paragraph(f"Reporting Period: {period}", styles["Sub"]))
+    story.append(Paragraph("Executive Summary", styles["H2"]))
+    k = dash["kpis"]
+    story.append(Paragraph(
+        f"During this period {c['name']} generated {k['leads']} leads, drove {k['conversions']} conversions on "
+        f"{inr(k['spend'])} ad spend, with a blended ROAS of {k['roas']}x. Client health score is "
+        f"{risk['metrics']['health_score']}/100 with risk level marked <b>{risk['risk_level'].upper()}</b>.",
+        styles["Body2"]))
+    story.append(Paragraph("Key Metrics", styles["H2"]))
+    kpi_data = [
+        ["Metric", "Value"],
+        ["Ad Spend", inr(k['spend'])], ["Ad Revenue", inr(k['revenue'])],
+        ["ROAS", f"{k['roas']}x"], ["CTR", f"{k['ctr']}%"],
+        ["CPA", inr(k['cpa'])], ["Leads", str(k['leads'])],
+        ["Conversions", str(k['conversions'])], ["Website Visitors", f"{k['website_visitors']:,}"],
+        ["Followers", f"{k['followers']:,}"], ["Engagement Rate", f"{k['engagement_rate']}%"],
+        ["SEO Score", f"{k['seo_score']}/100"], ["Health Score", f"{risk['metrics']['health_score']}/100"],
+    ]
+    t = Table(kpi_data, colWidths=[80*mm, 90*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FF9F1C")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dddddd")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f9")]),
+        ("PADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(t)
+
+    if top_camps:
+        story.append(Paragraph("Top Performing Campaigns", styles["H2"]))
+        rows = [["Campaign", "Platform", "Spend", "Revenue", "ROAS"]]
+        for cp in top_camps:
+            r = round((cp.get("revenue", 0) / max(cp.get("spend", 1), 1)), 2)
+            rows.append([cp["name"][:40], cp.get("platform", "-"), inr(cp.get("spend", 0)), inr(cp.get("revenue", 0)), f"{r}x"])
+        t2 = Table(rows, colWidths=[65*mm, 25*mm, 30*mm, 30*mm, 20*mm])
+        t2.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#10B981")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dddddd")),
+            ("PADDING", (0, 0), (-1, -1), 4)]))
+        story.append(t2)
+
+    if poor_camps:
+        story.append(Paragraph("Underperforming Campaigns (needs attention)", styles["H2"]))
+        rows = [["Campaign", "Platform", "Spend", "Revenue", "ROAS"]]
+        for cp in poor_camps:
+            r = round((cp.get("revenue", 0) / max(cp.get("spend", 1), 1)), 2)
+            rows.append([cp["name"][:40], cp.get("platform", "-"), inr(cp.get("spend", 0)), inr(cp.get("revenue", 0)), f"{r}x"])
+        t3 = Table(rows, colWidths=[65*mm, 25*mm, 30*mm, 30*mm, 20*mm])
+        t3.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EF4444")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#dddddd")),
+            ("PADDING", (0, 0), (-1, -1), 4)]))
+        story.append(t3)
+
+    if risk["drivers"]:
+        story.append(Paragraph("Risk Drivers & Recommended Intervention", styles["H2"]))
+        for d in risk["drivers"]:
+            story.append(Paragraph(f"• <b>{d['factor']}</b> — {d['detail']} (weight +{d['weight']})", styles["Body2"]))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(f"<b>Recommended Action:</b> {risk['intervention']}", styles["Body2"]))
+
+    story.append(Paragraph("Notes", styles["H2"]))
+    story.append(Paragraph(
+        "This report is auto-generated by VITRONX. Metrics derived from the platform database. "
+        "Ad platform data marked as <b>DEMO</b> in the app is synthetic and not from a live provider. "
+        "All figures shown in Indian Rupees (₹).", styles["Body2"]))
+    doc.build(story)
+    buf.seek(0)
+    return Response(content=buf.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="VITRONX-{c["name"].replace(" ", "_")}-Report.pdf"'})
+
+# ---------- Onboarding wizard endpoint ----------
+class OnboardingIn(BaseModel):
+    client: Dict[str, Any]
+    brand: Optional[Dict[str, Any]] = None
+    project: Optional[Dict[str, Any]] = None
+    campaign: Optional[Dict[str, Any]] = None
+    budget: Optional[Dict[str, Any]] = None
+    content: Optional[Dict[str, Any]] = None
+
+@api.post("/onboarding/complete")
+async def complete_onboarding(body: OnboardingIn, user: dict = Depends(require_role("agency_admin","account_manager"))):
+    """Create client + optional brand/project/campaign/budget/content in one flow."""
+    created = {}
+    # Client
+    cdoc = {**body.client, "id": new_id(), "created_at": now_iso(),
+            "status": body.client.get("status", "Active"),
+            "health_score": 82, "account_manager_id": user["id"],
+            "logo_color": body.client.get("logo_color") or random.choice(["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6"])}
+    await db.clients.insert_one(cdoc); strip_id(cdoc); created["client"] = cdoc
+    cid = cdoc["id"]
+    # Brand info stored on client
+    if body.brand:
+        await db.clients.update_one({"id": cid}, {"$set": {"brand": body.brand}})
+        created["brand"] = body.brand
+    # Project
+    if body.project and body.project.get("name"):
+        pdoc = {**body.project, "id": new_id(), "client_id": cid,
+                "status": body.project.get("status", "Active"), "progress": 0,
+                "created_at": now_iso()}
+        await db.projects.insert_one(pdoc); strip_id(pdoc); created["project"] = pdoc
+    # Campaign
+    if body.campaign and body.campaign.get("name"):
+        cdoc2 = {**body.campaign, "id": new_id(), "client_id": cid,
+                 "status": "Draft", "spend": 0, "impressions": 0, "clicks": 0,
+                 "conversions": 0, "revenue": 0, "created_at": now_iso()}
+        await db.campaigns.insert_one(cdoc2); strip_id(cdoc2); created["campaign"] = cdoc2
+    # Budget
+    if body.budget and body.budget.get("allocated"):
+        bdoc = {**body.budget, "id": new_id(), "client_id": cid, "period": "monthly",
+                "category": body.budget.get("category", "advertising"),
+                "created_at": now_iso()}
+        await db.budgets.insert_one(bdoc); strip_id(bdoc); created["budget"] = bdoc
+    # First content
+    if body.content and body.content.get("title"):
+        codoc = {**body.content, "id": new_id(), "client_id": cid,
+                 "status": "Idea", "created_at": now_iso()}
+        await db.content.insert_one(codoc); strip_id(codoc); created["content"] = codoc
+    await db.activity.insert_one({"id": new_id(), "client_id": cid, "user_id": user["id"],
+        "user_name": user["name"], "action": f"onboarded new client: {cdoc['name']}",
+        "created_at": now_iso()})
+    return created
+
 # ---------- Daily AI Brief ----------
 @api.get("/analytics/daily-brief")
 async def daily_brief(user: dict = Depends(get_current_user)):
@@ -1906,7 +2109,14 @@ async def seed_phase3():
         await db.ml_models.delete_many({"kind": "ctr_rf"})
         await db.ml_models.insert_one({"id": new_id(), "kind": "ctr_rf", **result,
                                         "created_at": now_iso(), "trained_by": "system"})
-    logger.info(f"Phase 3 seed complete. CTR model: {result.get('status')}")
+    # Train Lead Conversion model on seed leads
+    leads = await db.leads.find({}, {"_id": 0}).to_list(2000)
+    lr_result = train_lead_conversion(leads)
+    if lr_result.get("status") == "trained":
+        await db.ml_models.delete_many({"kind": "lead_lr"})
+        await db.ml_models.insert_one({"id": new_id(), "kind": "lead_lr", **lr_result,
+                                        "created_at": now_iso(), "trained_by": "system"})
+    logger.info(f"Phase 3 seed complete. CTR: {result.get('status')} · Lead: {lr_result.get('status')}")
 
 
 app.include_router(api)

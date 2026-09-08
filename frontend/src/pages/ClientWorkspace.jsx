@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Sparkles, Plus, Wand2, CheckCircle2, XCircle, Zap } from "lucide-react";
 import { CreativeIntelTab, RiskTab, BudgetTab } from "./CreativeIntel";
 import { CtrModelPanel, ProfitabilityCard, MessagesPanel, UploadButton } from "./Phase3Kit";
+import { LeadConversionPanel, DownloadPdfButton, ApprovalCardWithThread } from "./Phase4Kit";
 import { fmtINR } from "../lib/fmt";
 
 const COLORS = ["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6","#3B82F6"];
@@ -417,20 +418,7 @@ function ApprovalsTab({cid}){
       {items.length === 0 ? <EmptyState title="No pending approvals" hint="Content moves here when submitted for client review."/> :
        <div className="grid md:grid-cols-2 gap-4">
         {items.map(c => (
-          <div key={c.id} className="vx-card p-4" data-testid={`approval-${c.id}`}>
-            <div className="flex justify-between items-start">
-              <div>
-                <div className="text-[10px] uppercase tracking-widest text-slate-500">{c.content_type} · {c.platform}</div>
-                <div className="font-medium mt-1">{c.title}</div>
-              </div>
-              <StatusBadge status={c.status}/>
-            </div>
-            <div className="text-xs text-slate-400 mt-2">{c.caption}</div>
-            <div className="flex gap-2 mt-3">
-              <button data-testid={`approve-${c.id}`} onClick={()=>act(c.id,"approve")} className="vx-btn-primary flex-1 flex items-center justify-center gap-1"><CheckCircle2 size={14}/>Approve</button>
-              <button data-testid={`reject-${c.id}`} onClick={()=>act(c.id,"reject")} className="vx-btn-ghost flex-1 flex items-center justify-center gap-1"><XCircle size={14}/>Reject</button>
-            </div>
-          </div>
+          <ApprovalCardWithThread key={c.id} item={c} clientId={cid} onAction={act}/>
         ))}
       </div>}
     </div>
@@ -707,6 +695,7 @@ function MLTab({cid}){
       )}
 
       <CtrModelPanel/>
+      <LeadConversionPanel cid={cid}/>
     </div>
   );
 }
@@ -718,7 +707,10 @@ function ReportsTab({cid, client}){
     <div className="space-y-4" data-testid="reports-tab">
       <div className="flex justify-between items-center">
         <h3 className="font-display text-xl font-bold">Monthly Client Report</h3>
-        <button data-testid="generate-report-btn" onClick={gen} className="vx-btn-primary">Generate Report</button>
+        <div className="flex gap-2">
+          <button data-testid="generate-report-btn" onClick={gen} className="vx-btn-ghost">Preview</button>
+          <DownloadPdfButton clientId={cid} clientName={client.name}/>
+        </div>
       </div>
       {report && (
         <div className="vx-card p-6" data-testid="report-preview">

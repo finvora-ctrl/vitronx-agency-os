@@ -481,3 +481,83 @@ def get_trained_ctr_model() -> Dict[str, Any]:
             "importance": _CTR_MODEL["importance"],
             "model_version": _CTR_MODEL["version"],
             "trained_at": _CTR_MODEL["trained_at"]}
+
+
+# ---------- Lead Conversion Logistic Regression (Phase 4) ----------
+_LEAD_MODEL = {"model": None, "features": None, "metrics": None, "trained_at": None, "version": "lr-lead-v1"}
+_SRC_MAP = {"Website": 0, "Referral": 1, "LinkedIn": 2, "Google Ads": 3, "Instagram": 4, "Other": 5}
+_STAGE_MAP = {"New": 0, "Contacted": 1, "Qualified": 2, "Proposal": 3, "Won": 4, "Lost": 5}
+
+
+def _lead_to_features(lead: Dict[str, Any]) -> List[float]:
+    from datetime import datetime as _dt, timezone as _tz
+    src = _SRC_MAP.get(lead.get("source", "Other"), 5)
+    stage = _STAGE_MAP.get(lead.get("status", "New"), 0)
+    value = float(lead.get("value", 0))
+    value_log = math.log1p(value)
+    # Recency in days
+    created = lead.get("created_at")
+    try:
+        d = _dt.fromisoformat(created.replace("Z", "+00:00")) if created else _dt.now(_tz.utc)
+        recency_days = max((_dt.now(_tz.utc) - d).days, 0)
+    except Exception:
+        recency_days = 30
+    return [src, stage, value_log, recency_days]
+
+
+def train_lead_conversion(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Logistic Regression: predict P(Won) from source/stage/value/recency."""
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+    except ImportError:
+        return {"status": "sklearn_unavailable"}
+    valid = [r for r in records if r.get("status") in ("Won", "Lost")]
+    if len(valid) < 8:
+        return {"status": "insufficient_data", "samples": len(valid), "min_required": 8,
+                "note": "Need at least 8 Won/Lost labeled leads to train."}
+    X = np.array([_lead_to_features(r) for r in valid])
+    y = np.array([1 if r["status"] == "Won" else 0 for r in valid])
+    if len(set(y)) < 2:
+        return {"status": "class_imbalance", "note": "Need both Won and Lost examples."}
+    if len(valid) >= 20:
+        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+    else:
+        Xtr, ytr = X, y; Xte, yte = X, y
+    model = LogisticRegression(max_iter=500, class_weight="balanced").fit(Xtr, ytr)
+    yp = model.predict(Xte)
+    acc = float(accuracy_score(yte, yp))
+    prec = float(precision_score(yte, yp, zero_division=0))
+    rec = float(recall_score(yte, yp, zero_division=0))
+    f1 = float(f1_score(yte, yp, zero_division=0))
+    cm = confusion_matrix(yte, yp, labels=[0, 1]).tolist()
+    _LEAD_MODEL["model"] = model
+    _LEAD_MODEL["features"] = ["source", "stage", "value_log", "recency_days"]
+    _LEAD_MODEL["metrics"] = {"algorithm": "LogisticRegression(class_weight=balanced)",
+                              "train_records": len(Xtr), "test_records": len(Xte),
+                              "accuracy": round(acc, 3), "precision": round(prec, 3),
+                              "recall": round(rec, 3), "f1": round(f1, 3),
+                              "confusion_matrix": cm,
+                              "coefficients": dict(zip(_LEAD_MODEL["features"], [round(float(c), 3) for c in model.coef_[0]]))}
+    _LEAD_MODEL["trained_at"] = datetime.now(timezone.utc).isoformat()
+    return {"status": "trained", **_LEAD_MODEL["metrics"],
+            "model_version": _LEAD_MODEL["version"], "trained_at": _LEAD_MODEL["trained_at"],
+            "total_samples": len(valid)}
+
+
+def predict_lead_conversion(lead: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if _LEAD_MODEL["model"] is None:
+        return None
+    x = np.array([_lead_to_features(lead)])
+    proba = float(_LEAD_MODEL["model"].predict_proba(x)[0][1])
+    tier = "HOT" if proba >= 0.7 else ("WARM" if proba >= 0.4 else "COLD")
+    return {"conversion_probability": round(proba * 100, 1), "tier": tier,
+            "model_version": _LEAD_MODEL["version"]}
+
+
+def get_trained_lead_model() -> Dict[str, Any]:
+    if _LEAD_MODEL["model"] is None:
+        return {"status": "untrained"}
+    return {"status": "trained", "metrics": _LEAD_MODEL["metrics"],
+            "model_version": _LEAD_MODEL["version"], "trained_at": _LEAD_MODEL["trained_at"]}

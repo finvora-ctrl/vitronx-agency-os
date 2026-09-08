@@ -8,6 +8,7 @@ import AgencyDashboard from "./pages/AgencyDashboard";
 import ClientsList from "./pages/ClientsList";
 import ClientWorkspace from "./pages/ClientWorkspace";
 import { NotificationsPage, IntegrationsPage, ClientPortalHome } from "./pages/Phase2Pages";
+import { OnboardingWizard } from "./pages/Phase4Kit";
 import {
   GlobalCampaigns, GlobalProjects, GlobalTasks, GlobalCalendar, GlobalTeam,
   GlobalApprovals, GlobalLeads, GlobalContent, GlobalAds, GlobalSocial,
@@ -81,6 +82,7 @@ function App() {
             <Route path="/portal/approvals" element={<Protected clientOnly><ClientPortalHome/></Protected>}/>
             <Route path="/portal/reports" element={<Protected clientOnly><ClientPortalHome/></Protected>}/>
             <Route path="/portal/notifications" element={<Protected clientOnly><NotificationsPage/></Protected>}/>
+            <Route path="/onboarding" element={<Protected agencyOnly><OnboardingWizard/></Protected>}/>
             <Route path="/settings" element={<Protected><div className="text-slate-400">Settings coming soon</div></Protected>}/>
             <Route path="*" element={<Navigate to="/"/>}/>
           </Routes>
