@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { CampaignDoctorPanel, RecommendationsPanel, LearningLabPanel, TransparencyPanel } from "./IntelKit";
 import { api } from "../lib/api";
 import { KpiCard, StatusBadge, SectionHeader, EmptyState } from "../components/atoms";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, CartesianGrid, Legend } from "recharts";
@@ -20,7 +21,9 @@ const TABS = [
 
 export default function ClientWorkspace() {
   const { cid } = useParams();
-  const [tab, setTab] = useState("Overview");
+  const [sp] = useSearchParams();
+  const [tab, setTab] = useState(TABS.includes(sp.get("tab")) ? sp.get("tab") : "Overview");
+  useEffect(() => { const t = sp.get("tab"); if (TABS.includes(t)) setTab(t); }, [sp]);
   const [client, setClient] = useState(null);
   const [dash, setDash] = useState(null);
   const { switchClient } = useApp();
@@ -66,7 +69,7 @@ export default function ClientWorkspace() {
 
       <div className="animate-fade-in-up">
         {tab === "Overview" && <OverviewTab dash={dash ? {...dash, _cid: cid} : null} client={client}/>}
-        {tab === "Campaigns" && <CrudTab cid={cid} kind="campaigns" fields={["name","platform","objective","status","budget","spend","revenue","conversions"]} required={["name"]}/>}
+        {tab === "Campaigns" && <div className="space-y-6"><CampaignDoctorPanel cid={cid}/><CrudTab cid={cid} kind="campaigns" fields={["name","platform","objective","status","budget","spend","revenue","conversions"]} required={["name"]}/></div>}
         {tab === "Creative Intel" && <CreativeIntelTab cid={cid}/>}
         {tab === "Content" && <ContentTab cid={cid}/>}
         {tab === "Calendar" && <CalendarTab cid={cid}/>}
@@ -76,7 +79,7 @@ export default function ClientWorkspace() {
         {tab === "Approvals" && <ApprovalsTab cid={cid}/>}
         {tab === "SEO" && <SeoTab cid={cid}/>}
         {tab === "Analytics" && <OverviewTab dash={dash ? {...dash, _cid: cid} : null} client={client}/>}
-        {tab === "AI Insights" && <AITab cid={cid}/>}
+        {tab === "AI Insights" && <div className="space-y-6"><RecommendationsPanel cid={cid}/><AITab cid={cid}/></div>}
         {tab === "ML Lab" && <MLTab cid={cid}/>}
         {tab === "Risk" && <RiskTab cid={cid}/>}
         {tab === "Budget" && <BudgetTab cid={cid}/>}
@@ -694,6 +697,8 @@ function MLTab({cid}){
         </div>
       )}
 
+      <LearningLabPanel/>
+      <TransparencyPanel cid={cid}/>
       <CtrModelPanel/>
       <LeadConversionPanel cid={cid}/>
     </div>

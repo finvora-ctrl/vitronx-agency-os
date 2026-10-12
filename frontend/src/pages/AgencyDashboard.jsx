@@ -7,6 +7,7 @@ import { useApp } from "../context/AppContext";
 import { AlertTriangle, Zap } from "lucide-react";
 import { NeedsAttentionSection } from "./Phase2Pages";
 import { DailyBriefCard } from "./Phase3Kit";
+import { RecommendationsPanel } from "./IntelKit";
 import { fmtINR } from "../lib/fmt";
 
 const CHART_COLORS = ["#FF9F1C","#00E5FF","#10B981","#F43F5E","#8B5CF6","#3B82F6"];
@@ -86,6 +87,8 @@ export default function AgencyDashboard() {
       </div>
 
       <NeedsAttentionSection/>
+
+      <RecommendationsPanel/>
 
       <div className="grid lg:grid-cols-2 gap-6">
         <DailyBriefCard/>

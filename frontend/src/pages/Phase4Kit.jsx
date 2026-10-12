@@ -199,7 +199,7 @@ export function LeadConversionPanel({cid}) {
       <div className="flex justify-between items-center mb-3">
         <div>
           <div className="text-[11px] uppercase tracking-widest text-cyan-400 font-bold flex items-center gap-1"><Sparkles size={12}/>Lead Conversion — Logistic Regression</div>
-          <div className="text-xs text-slate-500 mt-1">Predicts P(Won) from source, stage, deal value, recency · class-balanced</div>
+          <div className="text-xs text-slate-500 mt-1">Predicts P(Won) from source, deal value, contact completeness · stage excluded (label leakage) · chronological split · trained on SYNTHETIC demo leads</div>
         </div>
         <button data-testid="retrain-lead" onClick={train} disabled={training} className="vx-btn-primary text-xs">{training?"Training…":"Retrain"}</button>
       </div>

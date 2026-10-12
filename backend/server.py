@@ -442,17 +442,16 @@ async def client_dashboard(cid: str, user: dict = Depends(get_current_user)):
     cpa = round(spend / conv, 2) if conv else 0
     roas = round(revenue / spend, 2) if spend else 0
 
-    # 30-day trend
-    trend = []
-    for i in range(30):
-        d = datetime.now(timezone.utc) - timedelta(days=29-i)
-        trend.append({
-            "date": d.strftime("%b %d"),
-            "impressions": int(imp / 30 * (0.7 + random.random() * 0.6)),
-            "clicks": int(clk / 30 * (0.7 + random.random() * 0.6)),
-            "conversions": int(conv / 30 * (0.6 + random.random() * 0.8)),
-            "spend": int(spend / 30 * (0.7 + random.random() * 0.6)),
-        })
+    # 30-day trend from stored daily metrics
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+    agg = await db.campaign_daily.aggregate([
+        {"$match": {"client_id": cid, "date": {"$gte": since}}},
+        {"$group": {"_id": "$date", "impressions": {"$sum": "$impressions"}, "clicks": {"$sum": "$clicks"},
+                    "conversions": {"$sum": "$conversions"}, "spend": {"$sum": "$spend"}}},
+        {"$sort": {"_id": 1}}]).to_list(60)
+    trend = [{"date": datetime.fromisoformat(a["_id"]).strftime("%b %d"), "impressions": a["impressions"],
+              "clicks": a["clicks"], "conversions": a["conversions"], "spend": round(a["spend"])} for a in agg]
+    trend_sources = await db.campaign_daily.distinct("data_source", {"client_id": cid})
 
     platform_split = {}
     for c in campaigns:
@@ -474,6 +473,8 @@ async def client_dashboard(cid: str, user: dict = Depends(get_current_user)):
             "open_tasks": sum(1 for t in tasks if t.get("status") != "Completed"),
         },
         "trend": trend,
+        "trend_data_sources": trend_sources,
+        "demo_fields": ["followers", "engagement_rate", "reach", "website_visitors", "seo_score"],
         "platform_split": [{"name": k, "value": v} for k, v in platform_split.items()],
         "lead_funnel": [
             {"stage": "New", "count": sum(1 for l in leads if l.get("status") == "New")},
@@ -842,6 +843,7 @@ async def on_start():
     await seed_all()
     await seed_phase2()
     await seed_phase3()
+    await intel_router.startup()
     # Write test creds
     try:
         mem = Path("/app/memory")
@@ -1742,9 +1744,7 @@ async def global_search(q: str, user: dict = Depends(get_current_user)):
 
 # ---------- Client profitability ----------
 @api.get("/finance/profitability/{client_id}")
-async def client_profitability(client_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] == "client" and user.get("client_id") != client_id:
-        raise HTTPException(403, "Forbidden")
+async def client_profitability(client_id: str, user: dict = Depends(require_role("agency_admin","account_manager"))):
     c = await db.clients.find_one({"id": client_id}, {"_id": 0})
     if not c: raise HTTPException(404, "Client not found")
     campaigns = await db.campaigns.find({"client_id": client_id}, {"_id": 0}).to_list(500)
@@ -1780,67 +1780,7 @@ async def all_profitability(user: dict = Depends(require_role("agency_admin","ac
     out.sort(key=lambda x: -x["gross_profit"])
     return out
 
-# ---------- Random Forest CTR Model API ----------
-@api.post("/ml/ctr-model/train")
-async def train_ctr(user: dict = Depends(require_role("agency_admin","account_manager"))):
-    """Train RF CTR model on all creatives with actual performance."""
-    records = await db.creatives.find({"actual_impressions": {"$gt": 0},
-                                        "actual_ctr": {"$exists": True}}, {"_id": 0}).to_list(2000)
-    result = train_ctr_model(records)
-    if result.get("status") == "trained":
-        await db.ml_models.insert_one({"id": new_id(), "kind": "ctr_rf",
-            **result, "created_at": now_iso(), "trained_by": user["id"]})
-    return result
-
-@api.get("/ml/ctr-model")
-async def ctr_model_status(user: dict = Depends(get_current_user)):
-    return get_trained_ctr_model()
-
-@api.get("/ml/ctr-model/predict/{creative_id}")
-async def predict_creative_ctr(creative_id: str, user: dict = Depends(get_current_user)):
-    c = await db.creatives.find_one({"id": creative_id}, {"_id": 0})
-    if not c: raise HTTPException(404, "Creative not found")
-    result = predict_ctr_rf(c)
-    if not result: return {"status": "model_not_trained", "hint": "POST /api/ml/ctr-model/train first"}
-    return {**result, "creative_name": c.get("name")}
-
-# ---------- Lead Conversion Logistic Regression ----------
-@api.post("/ml/lead-conversion/train")
-async def train_lead_model_api(user: dict = Depends(require_role("agency_admin","account_manager"))):
-    records = await db.leads.find({}, {"_id": 0}).to_list(2000)
-    result = train_lead_conversion(records)
-    if result.get("status") == "trained":
-        await db.ml_models.delete_many({"kind": "lead_lr"})
-        await db.ml_models.insert_one({"id": new_id(), "kind": "lead_lr", **result,
-                                        "created_at": now_iso(), "trained_by": user["id"]})
-    return result
-
-@api.get("/ml/lead-conversion")
-async def lead_model_status(user: dict = Depends(get_current_user)):
-    return get_trained_lead_model()
-
-@api.get("/ml/lead-conversion/predict/{lead_id}")
-async def predict_one_lead(lead_id: str, user: dict = Depends(get_current_user)):
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
-    if not lead: raise HTTPException(404, "Lead not found")
-    if user["role"] == "client" and user.get("client_id") != lead.get("client_id"):
-        raise HTTPException(403, "Forbidden")
-    result = predict_lead_conversion(lead)
-    if not result: return {"status": "model_not_trained", "hint": "POST /api/ml/lead-conversion/train first"}
-    return {**result, "lead_name": lead.get("name")}
-
-@api.get("/ml/lead-conversion/predict-batch/{client_id}")
-async def predict_leads_batch(client_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] == "client" and user.get("client_id") != client_id:
-        raise HTTPException(403, "Forbidden")
-    leads = await db.leads.find({"client_id": client_id}, {"_id": 0}).to_list(500)
-    out = []
-    for l in leads:
-        p = predict_lead_conversion(l)
-        if p: out.append({**l, **p})
-        else: out.append({**l, "conversion_probability": None, "tier": None})
-    out.sort(key=lambda x: -(x.get("conversion_probability") or 0))
-    return out
+# CTR / lead-conversion model endpoints live in intel.py (versioned registry)
 
 # ---------- PDF Reports ----------
 @api.get("/reports/{cid}/pdf")
@@ -2101,24 +2041,12 @@ async def seed_phase3():
         new_r = c["monthly_retainer"] * 85  # roughly $→₹ + agency premium
         await db.clients.update_one({"id": c["id"]}, {"$set": {"monthly_retainer": new_r}})
 
-    # Train CTR model on seed data
-    records = await db.creatives.find({"actual_impressions": {"$gt": 0},
-                                        "actual_ctr": {"$exists": True}}, {"_id": 0}).to_list(2000)
-    result = train_ctr_model(records)
-    if result.get("status") == "trained":
-        await db.ml_models.delete_many({"kind": "ctr_rf"})
-        await db.ml_models.insert_one({"id": new_id(), "kind": "ctr_rf", **result,
-                                        "created_at": now_iso(), "trained_by": "system"})
-    # Train Lead Conversion model on seed leads
-    leads = await db.leads.find({}, {"_id": 0}).to_list(2000)
-    lr_result = train_lead_conversion(leads)
-    if lr_result.get("status") == "trained":
-        await db.ml_models.delete_many({"kind": "lead_lr"})
-        await db.ml_models.insert_one({"id": new_id(), "kind": "lead_lr", **lr_result,
-                                        "created_at": now_iso(), "trained_by": "system"})
-    logger.info(f"Phase 3 seed complete. CTR: {result.get('status')} · Lead: {lr_result.get('status')}")
+    logger.info("Phase 3 seed complete")
 
 
+from intel import build_router as build_intel_router
+intel_router = build_intel_router(db, get_current_user, require_role, gen_ai_text, new_id, now_iso, client_profitability)
+api.include_router(intel_router)
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,

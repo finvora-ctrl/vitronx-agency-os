@@ -273,7 +273,7 @@ export function CtrModelPanel() {
         </div>
         <button data-testid="retrain-ctr" onClick={train} disabled={training} className="vx-btn-primary text-xs">{training?"Training…":"Retrain"}</button>
       </div>
-      {status.status !== "trained" ? <div className="text-sm text-slate-400 py-4 text-center">Model not trained yet. Click Retrain.</div> :
+      {status.status !== "trained" ? <div className="text-sm text-slate-400 py-4 text-center">No CTR model version has passed the evaluation gate (it did not beat a simple average baseline on chronological test data). Predictions are disabled — see the Learning Lab above.</div> :
       <>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KpiCard testId="ctr-r2" label="R²" value={status.metrics.r2} suffix="/1.0"/>

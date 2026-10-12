@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useApp } from "../context/AppContext";
+import AIBuddy from "./AIBuddy";
 import { GlobalSearchBox } from "../pages/Phase3Kit";
 import {
   LayoutDashboard, Users, Briefcase, Megaphone, ListTodo, CalendarDays,
@@ -171,8 +172,9 @@ export default function AppShell({ children }) {
           )}
           <button data-testid="settings-btn" onClick={() => nav("/settings")} className="p-2 text-slate-400 hover:text-white"><Settings size={16}/></button>
         </header>
-        <div className="flex-1 p-6 animate-fade-in-up">{children}</div>
+        <div className="flex-1 p-6 pb-24 animate-fade-in-up">{children}</div>
       </main>
+      <AIBuddy/>
     </div>
   );
 }

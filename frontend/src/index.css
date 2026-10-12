@@ -132,4 +132,20 @@
 .vx-input:focus { outline: none; border-color: #FF9F1C; }
 
 .animate-fade-in-up { animation: fadeInUp .35s ease-out both; }
+.vx-btn-secondary { background: var(--vx-card-hover); color: var(--vx-fg); border: 1px solid var(--vx-border-active); border-radius: 8px; padding: 6px 12px; font-weight: 500; transition: border-color .2s, background-color .2s; }
+.vx-btn-secondary:hover { border-color: #FF9F1C; }
+.vx-dog-tail { transform-origin: 50px 44px; animation: vxWag 1.2s ease-in-out infinite; }
+.vx-dog-speaking .vx-dog-tail, .vx-dog-listening .vx-dog-tail { animation-duration: .35s; }
+.vx-dog-eyes { transform-origin: 32px 27px; animation: vxBlink 4.5s infinite; }
+.vx-dog { animation: vxBob 3s ease-in-out infinite; }
+.vx-dog-thinking { animation: vxTilt 1s ease-in-out infinite; }
+.vx-dog-speaking .vx-dog-mouth { animation: vxTalk .3s ease-in-out infinite; transform-origin: 32px 36px; }
+@keyframes vxWag { 0%,100% { transform: rotate(-12deg); } 50% { transform: rotate(14deg); } }
+@keyframes vxBlink { 0%,92%,100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+@keyframes vxBob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+@keyframes vxTilt { 0%,100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+@keyframes vxTalk { 0%,100% { transform: scaleY(1); } 50% { transform: scaleY(1.8); } }
+.vx-buddy-panel { animation: fadeInUp .25s ease-out both; }
+.vx-dots i { display: inline-block; width: 5px; height: 5px; margin-right: 3px; border-radius: 50%; background: #00E5FF; animation: vxBob .9s infinite; }
+.vx-dots i:nth-child(2) { animation-delay: .15s; } .vx-dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
