@@ -1,0 +1,32 @@
+{
+  "summary": "First-iteration end-to-end test of VITRONX Campaign Doctor, Prediction-vs-Actual ML Learning Lab, Model Transparency, Recommendations and AI Buddy. 18/18 pytest backend tests pass against the public preview URL; frontend selectors (data-testid) all present on dashboard, Client Workspace (Campaigns, ML Lab, AI Insights), Client Portal, and 390px mobile viewport. AI Buddy roundtrip returns real grounded answers in <40s. Expected honest behaviours confirmed: ctr_rf has no active version (fails evaluation gate), lead_lr retrain returns 'skipped' (<5 new labels), manager cannot force retrain (403), client role gets 403 on /doctor/task, /finance/profitability/{cid} and cross-tenant recommendations?client_id=... Analytics trend is stable across repeated calls and exposes demo_fields/trend_data_sources. Regression (clients, GST invoices, payments, approvals, reports PDF) intact.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Client Workspace > ML Lab", "issues": ["Both the legacy 'ML Laboratory' (OLS forecast / lead scoring heatmap) and the new 'learning-lab-panel' + 'transparency-panel' render on the same tab. Not a bug, but consider consolidating or clearly separating the two sections to avoid user confusion."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_vitronx_phase.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 2057 lines — splitting invoices/payments/approvals/reports into separate routers would improve maintainability (>700 line guideline).",
+    "intel.py build_router is 580+ lines in one closure; the Campaign Doctor, ML Lab and Buddy sections could be split into separate module-level routers that receive db via dependency.",
+    "/api/campaign-daily upsert does not validate that date is not in the future and does not reject conversions>clicks — only clicks>impressions is checked.",
+    "In buddy_chat, when body.client_id is provided but refers to a different client for an agency user, the code silently uses the supplied cid without validation (scope() only restricts role=='client'); consider enforcing that agency users can only query clients they have access to if multi-tenant isolation is desired.",
+    "doctor_explain truncates facts JSON at 7000 chars with no indication to the LLM that it was truncated — may lead to incomplete narratives when many findings exist.",
+    "No cleanup endpoint for test interventions/campaign_daily rows; test data created by the suite remains in the DB (test_zz_cleanup only deletes tasks)."
+  ],
+  "updated_files": ["/app/backend/tests/test_vitronx_phase.py"],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100% of required data-testids present and functional"},
+  "test_credentials": "Used credentials from /app/memory/test_credentials.md: finvora@gmail.com/Vitronx@2026 (admin), sarah.manager@vitronx.demo/Demo@2026 (manager), riya.designer@vitronx.demo/Demo@2026 (designer), client@vitronx.demo/Demo@2026 (client_id bb8a55f8-a0e6-42f8-a68c-4676dc6449b5).",
+  "seed_data_creation": "Test suite created: 1 task + 1 intervention via /api/doctor/task; 1 campaign_daily row dated 2020-01-01 (far enough in the past to not affect doctor baseline window). Task cleaned up in test_zz_cleanup; intervention/campaign_daily left behind (no delete endpoint available) — safe because dates are isolated.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend fully green. If re-running: tests expect /api/invoices?client_id= and /api/payments?client_id= (not /api/clients/{cid}/invoices). AI Buddy backend latency ~5-15s with Gemini; use 40s timeout. ctr_rf having no active model is INTENTIONAL (gated promotion). lead_lr retrain 'skipped' is INTENTIONAL. explain-result data-testid only renders after user picks a kind+entity in the ML Lab transparency explain picker.",
+  "rca of the issue": "No issues found during this iteration. All 18 backend tests passed and all required frontend data-testids were present and interactive."
+}

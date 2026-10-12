@@ -224,7 +224,7 @@ def build_router(db, get_current_user, require_role, gen_ai_text, new_id, now_is
         due = datetime.now(timezone.utc) + timedelta(days=body.due_days or f["due_days"])
         ob = f["observed"]
         task = {"id": new_id(), "client_id": body.client_id, "name": f"Campaign Doctor: {camp['campaign_name']} — {f['title']}",
-                "description": f"Evidence: {f['metric']} {ob['baseline_value']}{ob['unit']} ({ob['baseline_period']}) → {ob['recent_value']}{ob['unit']} ({ob['recent_period']}), change {ob['change_pct']}%, confidence {f['confidence']}.\nActions: " + "; ".join(f["recommended_actions"]),
+                "description": f"Evidence: {f['metric']} {_fv(ob['baseline_value'], ob['unit'])} ({ob['baseline_period']}) → {_fv(ob['recent_value'], ob['unit'])} ({ob['recent_period']}), change {ob['change_pct']}%, confidence {f['confidence']}.\nActions: " + "; ".join(f["recommended_actions"]),
                 "assignee_id": owner["id"] if owner else user["id"], "priority": body.priority or f["priority"], "status": "To Do",
                 "due_date": due.isoformat(), "source": "campaign_doctor", "source_id": f["id"],
                 "campaign_id": body.campaign_id, "created_at": now_iso(), "created_by": user["id"]}
@@ -277,7 +277,8 @@ def build_router(db, get_current_user, require_role, gen_ai_text, new_id, now_is
         c = await db.campaigns.find_one({"id": body.campaign_id}, {"_id": 0})
         if not c: raise HTTPException(404, "Campaign not found")
         if body.clicks > body.impressions: raise HTTPException(400, "Clicks cannot exceed impressions")
-        datetime.fromisoformat(body.date)
+        if body.conversions > body.clicks: raise HTTPException(400, "Conversions cannot exceed clicks")
+        if datetime.fromisoformat(body.date).date() > _today(): raise HTTPException(400, "Date cannot be in the future")
         doc = {**body.model_dump(), "client_id": c["client_id"], "data_source": "agency_entered", "updated_at": now_iso()}
         await db.campaign_daily.update_one({"campaign_id": body.campaign_id, "date": body.date},
                                            {"$set": doc, "$setOnInsert": {"id": new_id()}}, upsert=True)
